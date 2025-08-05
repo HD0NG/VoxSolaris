@@ -66,7 +66,7 @@ def objective_function(k_values_array):
     print(f"\nTesting k-values: k3={k_coeffs[3]:.4f}, k4={k_coeffs[4]:.4f}, k5={k_coeffs[5]:.4f}")
 
     # a. Generate the shadow matrix for the current k-values
-    shadow_matrix_path = './shadow_matrix_results/temp_shadow_matrix.csv'
+    shadow_matrix_path = 'results/shadow_matrix_results/temp_shadow_matrix.csv'
     simulation_engine.generate_shadow_matrix(k_coeffs, shadow_matrix_path)
 
     # b. Calculate the forecast error across all calibration days
@@ -104,7 +104,8 @@ def run_calibration():
     full_pv_data = csv_reader.get_year(2021) # Assuming all days are in 2021
     for day in LIST_OF_CLEAR_LOOKING_DAYS:
         time_end = day + pd.Timedelta(days=1)
-        PV_DATA_CACHE[day] = full_pv_data[(full_pv_data.index >= day) & (full_pv_data.index < time_end)]
+        # FIX: Use .copy() to prevent SettingWithCopyWarning downstream
+        PV_DATA_CACHE[day] = full_pv_data[(full_pv_data.index >= day) & (full_pv_data.index < time_end)].copy()
     print("PV data loaded.")
 
     # --- 3. Run the optimization ---
@@ -132,7 +133,7 @@ def run_calibration():
     print(f"Optimal k-values found: {optimal_k_coeffs}")
     
     # Generate the final, optimal shadow matrix
-    optimal_matrix_path = './shadow_matrix_results/optimal_shadow_matrix.csv'
+    optimal_matrix_path = 'results/shadow_matrix_results/optimal_shadow_matrix.csv'
     simulation_engine.generate_shadow_matrix(optimal_k_coeffs, optimal_matrix_path)
 
     # Calculate error on the validation set
@@ -151,7 +152,7 @@ def run_calibration():
     print(f"Original k-values: {original_k_coeffs}")
     
     # Generate shadow matrix with original k's
-    original_matrix_path = './shadow_matrix_results/original_shadow_matrix.csv'
+    original_matrix_path = 'results/shadow_matrix_results/original_shadow_matrix.csv'
     simulation_engine.generate_shadow_matrix(original_k_coeffs, original_matrix_path)
 
     # Calculate error on the validation set using original k's
@@ -172,8 +173,9 @@ def run_calibration():
         print(f"  - Vegetation Class {veg_class}: k = {k_val:.4f}")
     
     print(f"\nFinal Average RMSE on CALIBRATION set (with optimal k's): {final_calibration_error:.4f} W")
-    print(f"Final Average RMSE on VALIDATION set (with optimal k's): {average_validation_error:.4f} W")
-    print(f"Final Average RMSE on VALIDATION set (with ORIGINAL k's): {average_original_error:.4f} W")
+    print(f"\n--- Performance on Unseen VALIDATION Data ---")
+    print(f"Average RMSE with OPTIMIZED k's: {average_validation_error:.4f} W")
+    print(f"Average RMSE with ORIGINAL k's:  {average_original_error:.4f} W")
     
     # Save the optimal k-values
     with open("optimal_k_values.txt", "w") as f:

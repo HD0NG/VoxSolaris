@@ -2,3 +2,5 @@
 results/
 data/
 __pycache__/
+pvdata/
+shadowdata/
