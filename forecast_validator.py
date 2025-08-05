@@ -30,9 +30,22 @@ def calculate_model_error(shadow_matrix_path, pv_data_df):
     # 1. Modify the csv_reader to use the specified shadow matrix
     # This is a temporary modification to point the reader to the correct file
     original_get_shadowdata = csv_reader.get_shadowdata
-    csv_reader.get_shadowdata = lambda dense=True: pd.read_csv(shadow_matrix_path, index_col=0)
+    
+    def load_and_fix_shadow_matrix(dense=True):
+        """
+        Loads the specified shadow matrix and fixes the index to be integer-based,
+        preventing the KeyError.
+        """
+        df = pd.read_csv(shadow_matrix_path, index_col=0)
+        # FIX: Convert string index 'Altitude_10' to integer 10
+        df.index = df.index.str.replace('Altitude_', '').astype(int)
+        return df
+
+    csv_reader.get_shadowdata = load_and_fix_shadow_matrix
 
     # 2. Calculate solar position and shading values
+    # Note: The SettingWithCopyWarning is best fixed by using .copy() when the
+    # slice is created, which is now done in run_calibration.py.
     azimuths, zeniths = miniPVforecast.get_solar_azimuth_zenit_fast(pv_data_df.index)
     pv_data_df["azimuth"] = azimuths
     pv_data_df["zenith"] = zeniths
