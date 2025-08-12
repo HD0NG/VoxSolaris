@@ -1,20 +1,18 @@
 # --- PV Forecast Model Comparison ---
 #
-# This script performs a comparative analysis of three different PV forecast models
-# against the measured, real-world power output. The goal is to quantify the
-# improvement provided by each stage of shadow correction.
+# This script performs a comparative analysis of the Clearsky vs. Direct Shadow models
+# against the measured, real-world power output.
 #
-# The three models being tested are:
+# The two models being tested are:
 # 1. Clearsky Model: An ideal forecast with no shadow or cloud correction.
 # 2. Direct Shadow Model: The clearsky forecast corrected by a direct, single-point
 #    lookup in the shadow matrix.
-# 3. Final Prediction (Box Blur Model): The clearsky forecast corrected by
-#    averaging a small area ("box blur") of the shadow matrix, which is the
-#    method used in the final plots.
 #
 # The script iterates through all known clear-sky days, calculates the Root Mean
 # Squared Error (RMSE) for each model on each day, and then reports the
-# average error for each model across the entire dataset.
+# average error for each model across the entire dataset. It also categorizes
+# days based on whether the shadow model provided a performance improvement and
+# provides a final summary of average errors per month.
 
 import numpy as np
 import pandas as pd
@@ -51,13 +49,14 @@ def calculate_rmse(measured, forecast):
 
 def run_comparison():
     """
-    Main function to run the three models and compare their performance.
+    Main function to run the two models and compare their performance.
     """
     print("--- Starting PV Forecast Model Comparison ---")
     start_time = time.time()
 
     # --- Use the optimal shadow matrix from the calibration ---
     # This assumes the calibration has been run and the optimal matrix was saved.
+    shadow_matrix_path = 'results/shadow_matrix_results/optimal_shadow_matrix.csv'
     shadow_matrix_path = 'results/shadow_matrix_results/shadow_attenuation_matrix_conecasting.csv'
     
     # Temporarily modify csv_reader to load the correct matrix and fix the index
@@ -73,9 +72,7 @@ def run_comparison():
     full_pv_data = csv_reader.get_year(2021)
     
     # --- Store results for each model ---
-    errors_clearsky = []
-    errors_direct_shadow = []
-    errors_box_blur_shadow = []
+    results = []
 
     # --- Loop through each clear day ---
     for day in LIST_OF_CLEAR_LOOKING_DAYS:
@@ -92,49 +89,70 @@ def run_comparison():
         # --- Model 1: Clearsky Forecast ---
         clearsky_forecast = miniPVforecast.get_pvlib_cleasky_irradiance(pv_data_for_day.index)
         rmse_clearsky = calculate_rmse(pv_data_for_day["Energia MPP1 | Symo 8.2-3-M (1)"], clearsky_forecast['output'])
-        errors_clearsky.append(rmse_clearsky)
         print(f"  - Clearsky Model RMSE: {rmse_clearsky:.2f} W")
 
         # --- Prepare for shadow models ---
         azimuths, zeniths = miniPVforecast.get_solar_azimuth_zenit_fast(pv_data_for_day.index)
         pv_data_for_day["azimuth"] = azimuths
         pv_data_for_day["zenith"] = zeniths
-
-        # --- Model 2: Final Prediction (Box Blur) ---
-        shadowrange = 20 # Using the default from Timo's plotting script
-        pv_data_for_day["shading_blur"] = shadowmap.add_box_blur_shading_to_pv_output_df(pv_data_for_day, shadowrange, max=False)
-        box_blur_forecast = miniPVforecast.get_pvlib_shaded_clearsky_irradiance(pv_data_for_day.index, pv_data_for_day["shading_blur"])
-        rmse_box_blur = calculate_rmse(pv_data_for_day["Energia MPP1 | Symo 8.2-3-M (1)"], box_blur_forecast['output'])
-        errors_box_blur_shadow.append(rmse_box_blur)
-        print(f"  - Final (Box Blur) Model RMSE: {rmse_box_blur:.2f} W")
         
-        # --- Model 3: Your Direct Prediction (Point Lookup) ---
-        # We use add_box_blur_shading_to_pv_output_df with radius=0, which is equivalent to a direct point lookup
+        # --- Model 2: Your Direct Prediction (Point Lookup) ---
         pv_data_for_day["shading_direct"] = shadowmap.add_box_blur_shading_to_pv_output_df(pv_data_for_day, radius=0, max=False)
         direct_forecast = miniPVforecast.get_pvlib_shaded_clearsky_irradiance(pv_data_for_day.index, pv_data_for_day["shading_direct"])
         rmse_direct = calculate_rmse(pv_data_for_day["Energia MPP1 | Symo 8.2-3-M (1)"], direct_forecast['output'])
-        errors_direct_shadow.append(rmse_direct)
         print(f"  - Direct Shadow Model RMSE: {rmse_direct:.2f} W")
+
+        # Store results for this day
+        results.append({
+            'date': day.date(),
+            'rmse_clearsky': rmse_clearsky,
+            'rmse_direct_shadow': rmse_direct
+        })
 
     # --- Restore original csv_reader function ---
     csv_reader.get_shadowdata = original_get_shadowdata
         
-    # --- Final Averaged Results ---
-    avg_error_clearsky = np.nanmean(errors_clearsky)
-    avg_error_direct = np.nanmean(errors_direct_shadow)
-    avg_error_box_blur = np.nanmean(errors_box_blur_shadow)
-
-    print("\n--- Final Averaged Model Comparison ---")
-    print(f"Processed {len(errors_clearsky)} clear-sky days.")
-    print(f"Total execution time: {time.time() - start_time:.2f} seconds")
-    print("-" * 40)
-    print(f"1. Average Clearsky Model RMSE:      {avg_error_clearsky:.2f} W")
-    print(f"2. Average Direct Shadow Model RMSE: {avg_error_direct:.2f} W")
-    print(f"3. Average Final (Box Blur) RMSE:    {avg_error_box_blur:.2f} W")
-    print("-" * 40)
+    # --- Final Categorized Results ---
+    results_df = pd.DataFrame(results)
+    results_df['improvement'] = results_df['rmse_clearsky'] - results_df['rmse_direct_shadow']
     
-    improvement_over_clearsky = avg_error_clearsky - avg_error_box_blur
-    print(f"The final model provides an average improvement of {improvement_over_clearsky:.2f} W (RMSE) over the base clearsky forecast.")
+    days_helped = results_df[results_df['improvement'] > 0]
+    days_not_helped = results_df[results_df['improvement'] <= 0]
+
+    print("\n--- Final Model Performance Summary ---")
+    print(f"Processed {len(results_df)} clear-sky days.")
+    print(f"Total execution time: {time.time() - start_time:.2f} seconds")
+    
+    print("\n" + "="*50)
+    print("Days Where the Shadow Model HELPED (Lowered Error)")
+    print("="*50)
+    if not days_helped.empty:
+        print(days_helped[['date', 'rmse_clearsky', 'rmse_direct_shadow', 'improvement']].round(2).to_string(index=False))
+        print(f"\nAverage RMSE Improvement on these days: {days_helped['improvement'].mean():.2f} W")
+    else:
+        print("No days found where the shadow model improved the forecast.")
+
+    print("\n" + "="*50)
+    print("Days Where the Shadow Model DID NOT HELP (Increased Error)")
+    print("="*50)
+    if not days_not_helped.empty:
+        print(days_not_helped[['date', 'rmse_clearsky', 'rmse_direct_shadow', 'improvement']].round(2).to_string(index=False))
+        print(f"\nAverage RMSE Increase on these days: {-days_not_helped['improvement'].mean():.2f} W")
+    else:
+        print("No days found where the shadow model worsened the forecast.")
+    print("="*50)
+
+    # --- Monthly Average RMSE Summary ---
+    results_df['month'] = pd.to_datetime(results_df['date']).dt.month
+    monthly_avg_errors = results_df.groupby('month')[['rmse_clearsky', 'rmse_direct_shadow']].mean()
+    monthly_avg_errors.index.name = 'Month'
+    
+    print("\n" + "="*50)
+    print("Average Model RMSE by Month")
+    print("="*50)
+    print(monthly_avg_errors.round(2).to_string())
+    print("="*50)
+
 
 if __name__ == '__main__':
     run_comparison()

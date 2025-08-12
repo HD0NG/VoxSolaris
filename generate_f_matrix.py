@@ -1,7 +1,15 @@
-# Voxel-Based Cone-Casting Shadow Attenuation Matrix Generator
+# --- VoxSolaris: Final Shadow Matrix Generator ---
 #
-# This is a refactored version of the VoxSolaris script, designed to be
-# imported and called as a function by other scripts (e.g., for calibration).
+# This script is a standalone tool for generating a high-quality shadow
+# attenuation matrix using the fully developed VoxSolaris simulation engine.
+# It incorporates all advanced features, including:
+#   - Voxelization of LiDAR data
+#   - Solid building model generation via extrusion
+#   - Realistic soft shadows using a cone-casting engine
+#   - Support for multiple vegetation classes with distinct k-values
+#
+# This script is intended for generating a final matrix after the optimal
+# k-values have been determined through the calibration process.
 
 import os
 import time
@@ -10,59 +18,58 @@ import laspy
 import numpy as np
 import pandas as pd
 
-# --- Default Configuration (can be overridden by the main function) ---
+# --- CONFIGURATION ---
+# Set all simulation parameters in this section.
+
+# 1. Input Data and Scene Definition
 LIDAR_FILE_PATH = 'data/houselas_re_veg_2.las'
+OUTPUT_DIRECTORY = 'results/shadow_matrix_results'
+OUTPUT_FILENAME = 'final_shadow_matrix.csv'
+BOUNDING_BOX = None
+
+# --- Target coordinates for analysis ---
 TARGET_COORDS_2D = np.array([532886, 6983516])
+
+# ASPRS Standard Classification Codes
 RELEVANT_CLASSES = {2, 3, 4, 5, 6}
 GROUND_CLASS_CODE = 2
 BUILDING_CLASS_CODE = 6
 VEGETATION_CLASS_CODES = {3, 4, 5}
+
+# Priority for voxel classification (higher number = higher priority)
 CLASS_PRIORITY = {6: 4, 5: 3, 4: 2, 3: 1, 2: 0, 0: -1}
+
+# 2. Voxelization Parameters
 VOXEL_SIZE = 0.5
-AZIMUTH_STEPS = 360
-ELEVATION_STEPS = 91
+
+# 3. Solar Position & Cone-Casting Simulation Parameters
+AZIMUTH_STEPS = 360  # 1-degree steps
+ELEVATION_STEPS = 91 # 1-degree steps (0-90 inclusive)
 SOLAR_ANGULAR_RADIUS_DEG = 0.265
 NUM_RAYS_PER_CONE = 16
 
-# --- Main Function to be called by other scripts ---
-
-def generate_shadow_matrix(k_coeffs, output_path):
-    """
-    Generates a shadow matrix for a given set of vegetation extinction coefficients.
-
-    Args:
-        k_coeffs (dict): A dictionary mapping vegetation class codes to their
-                         k-values. e.g., {3: 0.7, 4: 0.5, 5: 0.3}
-        output_path (str): The full path where the output CSV should be saved.
-    """
-    print(f"Generating shadow matrix with k-values: {k_coeffs}")
-    
-    # 1. Load and Prepare Data
-    points, classifications = load_and_prepare_lidar(LIDAR_FILE_PATH, None, RELEVANT_CLASSES)
-    if points is None: return
-
-    # 2. Voxelize Scene
-    classification_grid, density_grid, scene_min, grid_dims = voxelize_scene(points, classifications, VOXEL_SIZE)
-    if classification_grid is None: return
-    scene_max = scene_min + grid_dims * VOXEL_SIZE
-
-    # 3. Define the analysis point
-    analysis_point = get_analysis_point(points, classifications, scene_max)
-    print(f"Analysis point set to: {analysis_point}")
-
-    # 4. Run Simulation Loop
-    simulation_results = run_simulation_loop(analysis_point, scene_min, grid_dims, classification_grid, density_grid, k_coeffs)
-    
-    # 5. Format and Save Matrix
-    save_matrix(simulation_results, output_path)
-    print(f"Shadow matrix saved to {output_path}")
+# 4. Ray-Casting and Attenuation Parameters
+# --- IMPORTANT: Set your desired k-values here ---
+# You can use your original estimates or the optimal values found during calibration.
+VEGETATION_EXTINCTION_COEFFICIENTS = {
+    3: 0.7,  # k for Low Vegetation
+    4: 0.5,  # k for Medium Vegetation
+    5: 0.3   # k for High Vegetation
+}
 
 
-# --- Helper Functions (Modules from the original script) ---
+# --- MODULE 1: DATA INGESTOR & PREPARER ---
 
-def load_and_prepare_lidar(file_path, bounding_box, relevant_classes):
-    if not os.path.exists(file_path): return None, None
-    las = laspy.read(file_path)
+def load_and_prepare_lidar(file_path, bounding_box=None, relevant_classes=None):
+    print(f"Loading LiDAR data from {file_path}...")
+    if not os.path.exists(file_path):
+        print(f"Error: File not found at {file_path}")
+        return None, None
+    try:
+        las = laspy.read(file_path)
+    except Exception as e:
+        print(f"Error reading file: {e}")
+        return None, None
     points_xyz = np.vstack((las.x, las.y, las.z)).transpose()
     classifications = np.array(las.classification)
     if relevant_classes:
@@ -75,12 +82,16 @@ def load_and_prepare_lidar(file_path, bounding_box, relevant_classes):
     print(f"Data loaded and filtered. {len(points_xyz)} points remaining.")
     return points_xyz, classifications
 
+
+# --- MODULE 2: VOXELIZER ---
+
 def voxelize_scene(points, classifications, voxel_size):
     print("Voxelizing the scene...")
     scene_min = np.min(points, axis=0)
     scene_max = np.max(points, axis=0)
     grid_dims = np.ceil((scene_max - scene_min) / voxel_size).astype(int)
-    
+    print(f"Voxel grid dimensions: {grid_dims}")
+
     classification_grid = np.zeros(grid_dims, dtype=np.int8)
     density_grid = np.zeros(grid_dims, dtype=np.float32)
     
@@ -114,21 +125,8 @@ def voxelize_scene(points, classifications, voxel_size):
     print("Voxelization complete.")
     return classification_grid, density_grid, scene_min, grid_dims
 
-def get_analysis_point(points, classifications, scene_max):
-    search_radius = 1.0
-    mask = (
-        (points[:, 0] > TARGET_COORDS_2D[0] - search_radius) & (points[:, 0] < TARGET_COORDS_2D[0] + search_radius) &
-        (points[:, 1] > TARGET_COORDS_2D[1] - search_radius) & (points[:, 1] < TARGET_COORDS_2D[1] + search_radius)
-    )
-    points_near_target = points[mask]
 
-    if len(points_near_target) > 0:
-        target_z = np.max(points_near_target[:, 2]) + 0.01
-    else:
-        print(f"Warning: No LiDAR points found near target. Using scene max Z.")
-        target_z = scene_max[2]
-        
-    return np.array([TARGET_COORDS_2D[0], TARGET_COORDS_2D[1], np.ceil(target_z)])
+# --- MODULE 3: RAY-CASTING & CONE-CASTING ENGINE ---
 
 def generate_cone_vectors(center_direction, radius_rad, num_samples):
     if np.allclose(np.abs(center_direction), [0, 0, 1]): v_up = np.array([0, 1, 0])
@@ -182,12 +180,43 @@ def calculate_transmittance(voxel_path_generator, classification_grid, density_g
         if transmittance < 1e-6: return 0.0
     return transmittance
 
-def run_simulation_loop(analysis_point, scene_min, grid_dims, classification_grid, density_grid, k_coeffs):
+
+# --- MAIN EXECUTION SCRIPT ---
+
+if __name__ == '__main__':
+    start_time = time.time()
+    
+    # 1. Load and Prepare Data
+    points, classifications = load_and_prepare_lidar(LIDAR_FILE_PATH, BOUNDING_BOX, RELEVANT_CLASSES)
+    if points is None: exit()
+
+    # 2. Voxelize Scene
+    classification_grid, density_grid, scene_min, grid_dims = voxelize_scene(points, classifications, VOXEL_SIZE)
+    if classification_grid is None: exit()
+    scene_max = scene_min + grid_dims * VOXEL_SIZE
+
+    # 3. Define the analysis point
+    search_radius = 5.0
+    mask = (
+        (points[:, 0] > TARGET_COORDS_2D[0] - search_radius) & (points[:, 0] < TARGET_COORDS_2D[0] + search_radius) &
+        (points[:, 1] > TARGET_COORDS_2D[1] - search_radius) & (points[:, 1] < TARGET_COORDS_2D[1] + search_radius)
+    )
+    points_near_target = points[mask]
+    if len(points_near_target) > 0:
+        target_z = np.max(points_near_target[:, 2]) + 0.01
+    else:
+        print(f"Warning: No LiDAR points found near target. Using scene max Z.")
+        target_z = scene_max[2]
+    analysis_point = np.array([TARGET_COORDS_2D[0], TARGET_COORDS_2D[1], target_z])
+    print(f"Analysis point set to: {analysis_point}")
+
+    # 4. Run Simulation Loop
     azimuths = np.linspace(0, 2 * np.pi, AZIMUTH_STEPS, endpoint=False)
     elevations = np.linspace(0, np.pi / 2, ELEVATION_STEPS, endpoint=True)
     solar_radius_rad = np.deg2rad(SOLAR_ANGULAR_RADIUS_DEG)
     simulation_results = []
     total_directions = len(azimuths) * (len(elevations) - 1)
+    print(f"\n--- Starting Cone-Casting Simulation ---")
     print(f"Casting {NUM_RAYS_PER_CONE} rays per cone for {total_directions} positions...")
     
     current_direction = 0
@@ -195,21 +224,21 @@ def run_simulation_loop(analysis_point, scene_min, grid_dims, classification_gri
         if el < 0.001: continue
         for az in azimuths:
             current_direction += 1
-            # if current_direction % 1000 == 0:
-            #      print(f"Processing direction {current_direction}/{total_directions}...")
+            if current_direction % 1000 == 0:
+                 print(f"Processing direction {current_direction}/{total_directions}...")
             
             center_ray_direction = np.array([np.cos(el) * np.sin(az), np.cos(el) * np.cos(az), np.sin(el)])
             cone_ray_vectors = generate_cone_vectors(center_ray_direction, solar_radius_rad, NUM_RAYS_PER_CONE)
             cone_transmittances = []
             for ray_vec in cone_ray_vectors:
                 voxel_path_gen = trace_ray_fast(analysis_point, ray_vec, scene_min, VOXEL_SIZE, grid_dims)
-                transmittance = calculate_transmittance(voxel_path_gen, classification_grid, density_grid, VOXEL_SIZE, k_coeffs)
+                transmittance = calculate_transmittance(voxel_path_gen, classification_grid, density_grid, VOXEL_SIZE, VEGETATION_EXTINCTION_COEFFICIENTS)
                 cone_transmittances.append(transmittance)
             avg_transmittance = np.mean(cone_transmittances)
             simulation_results.append({'azimuth': az, 'elevation': el, 'transmittance': avg_transmittance})
-    return simulation_results
 
-def save_matrix(simulation_results, output_path):
+    # 5. Format and Save Final Matrix
+    print("\n--- Aggregating Results into CSV Matrix ---")
     df = pd.DataFrame(simulation_results)
     df['azimuth_deg'] = np.round(np.rad2deg(df['azimuth'])).astype(int)
     df['elevation_deg'] = np.round(np.rad2deg(df['elevation'])).astype(int)
@@ -221,8 +250,14 @@ def save_matrix(simulation_results, output_path):
     if 'Azimuth_0' in shadow_matrix_df.columns:
         shadow_matrix_df['Azimuth_360'] = shadow_matrix_df['Azimuth_0']
     
-    output_dir = os.path.dirname(output_path)
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-        
+    if not os.path.exists(OUTPUT_DIRECTORY):
+        os.makedirs(OUTPUT_DIRECTORY)
+    output_path = os.path.join(OUTPUT_DIRECTORY, OUTPUT_FILENAME)
     shadow_matrix_df.to_csv(output_path, header=True, index=True)
+    
+    end_time = time.time()
+    print(f"\n--- Simulation Finished ---")
+    print(f"Total execution time: {(end_time - start_time) / 60:.2f} minutes")
+    print(f"Saved final shadow matrix to {output_path}")
+
+# --- END OF SCRIPT ---

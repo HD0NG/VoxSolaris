@@ -50,18 +50,18 @@ def calculate_model_error(shadow_matrix_path, pv_data_df):
     pv_data_df["azimuth"] = azimuths
     pv_data_df["zenith"] = zeniths
     
-    # Using a fixed shadowrange of 20 as a default, based on Timo's script
-    shadowrange = 20 
-    pv_data_df["shading_blur"] = shadowmap.add_box_blur_shading_to_pv_output_df(pv_data_df, shadowrange, max=False)
+    # --- MODIFIED: Using direct lookup (radius=0) for calibration ---
+    shadowrange = 0 
+    pv_data_df["shading_direct"] = shadowmap.add_box_blur_shading_to_pv_output_df(pv_data_df, shadowrange, max=False)
 
     # 3. Generate the shadow-corrected clearsky forecast
-    df_cs_shade_blur = miniPVforecast.get_pvlib_shaded_clearsky_irradiance(pv_data_df.index, pv_data_df["shading_blur"])
+    df_cs_shade_direct = miniPVforecast.get_pvlib_shaded_clearsky_irradiance(pv_data_df.index, pv_data_df["shading_direct"])
 
     # 4. Prepare data for comparison
     # Align data and handle potential NaNs
     comparison_df = pd.DataFrame({
         'measured': pv_data_df["Energia MPP1 | Symo 8.2-3-M (1)"],
-        'forecast': df_cs_shade_blur["output"]
+        'forecast': df_cs_shade_direct["output"]
     }).dropna()
 
     # Restore the original csv_reader function

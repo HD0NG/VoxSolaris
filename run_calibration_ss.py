@@ -72,7 +72,6 @@ def objective_function(k_values_array):
 
     # a. Generate the shadow matrix for the current k-values
     shadow_matrix_path = 'results/shadow_matrix_results/temp_shadow_matrix.csv'
-    # shadow_matrix_path = 'results/shadow_matrix_results/shadow_attenuation_matrix_conecasting.csv'
     simulation_engine.generate_shadow_matrix(k_coeffs, shadow_matrix_path)
 
     # b. Calculate the forecast error across all calibration days
