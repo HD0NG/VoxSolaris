@@ -55,6 +55,19 @@ def run_comparison():
     """
     Main function to run the three models and compare their performance.
     """
+
+        # feeding parameters to pvmodel
+    tilt = 12
+    azimuth = 170
+    longitude = 27.648656
+    latitude = 62.979848
+
+    miniPVforecast.tilt = tilt
+    miniPVforecast.azimuth = azimuth
+    miniPVforecast.longitude = longitude
+    miniPVforecast.latitude = latitude
+    miniPVforecast.rated_power = 3.960 * 0.81
+    
     print("--- Starting PV Forecast Model Comparison ---")
     start_time = time.time()
 

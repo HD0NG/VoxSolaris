@@ -13,6 +13,18 @@ import shadowmap
 import csv_reader # We will modify this slightly
 
 def calculate_model_error(shadow_matrix_path, pv_data_df):
+
+    # feeding parameters to pvmodel
+    tilt = 12
+    azimuth = 170
+    longitude = 27.648656
+    latitude = 62.979848
+
+    miniPVforecast.tilt = tilt
+    miniPVforecast.azimuth = azimuth
+    miniPVforecast.longitude = longitude
+    miniPVforecast.latitude = latitude
+    miniPVforecast.rated_power = 3.960 * 0.81
     """
     Calculates the Root Mean Squared Error (RMSE) between a shadow-corrected
     forecast and measured PV data for a given day.
@@ -50,8 +62,8 @@ def calculate_model_error(shadow_matrix_path, pv_data_df):
     pv_data_df["azimuth"] = azimuths
     pv_data_df["zenith"] = zeniths
     
-    # --- MODIFIED: Using direct lookup (radius=0) for calibration ---
-    shadowrange = 0 
+    # --- Using box blur (radius=20) for calibration ---
+    shadowrange = 20
     pv_data_df["shading_direct"] = shadowmap.add_box_blur_shading_to_pv_output_df(pv_data_df, shadowrange, max=False)
 
     # 3. Generate the shadow-corrected clearsky forecast

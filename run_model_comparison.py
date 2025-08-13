@@ -51,13 +51,25 @@ def run_comparison():
     """
     Main function to run the two models and compare their performance.
     """
+    # feeding parameters to pvmodel
+    tilt = 12
+    azimuth = 170
+    longitude = 27.648656
+    latitude = 62.979848
+
+    miniPVforecast.tilt = tilt
+    miniPVforecast.azimuth = azimuth
+    miniPVforecast.longitude = longitude
+    miniPVforecast.latitude = latitude
+    miniPVforecast.rated_power = 3.960 * 0.81
+
     print("--- Starting PV Forecast Model Comparison ---")
     start_time = time.time()
 
     # --- Use the optimal shadow matrix from the calibration ---
     # This assumes the calibration has been run and the optimal matrix was saved.
-    shadow_matrix_path = 'results/shadow_matrix_results/optimal_shadow_matrix.csv'
-    shadow_matrix_path = 'results/shadow_matrix_results/shadow_attenuation_matrix_conecasting.csv'
+    # shadow_matrix_path = 'results/shadow_matrix_results/optimal_shadow_matrix.csv'
+    shadow_matrix_path = 'results/shadow_matrix_results/shadow_attenuation_matrix_conecasting_f.csv'
     
     # Temporarily modify csv_reader to load the correct matrix and fix the index
     original_get_shadowdata = csv_reader.get_shadowdata

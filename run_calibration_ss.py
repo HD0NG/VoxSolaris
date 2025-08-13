@@ -1,14 +1,15 @@
-# --- VoxSolaris K-Value Calibration Engine (Optimized for Seasonal Analysis) ---
+# --- VoxSolaris K-Value Calibration Engine (Optimized) ---
 #
 # This script automates finding the optimal extinction coefficients (k-values)
 # for vegetation classes using the Nelder-Mead optimization algorithm.
 #
-# THIS VERSION IS MODIFIED TO USE ONLY SPRING & SUMMER DAYS FOR CALIBRATION
-# to test the hypothesis of "leaf-on" vs. "leaf-off" conditions.
+# THIS VERSION IS MODIFIED TO:
+# 1. Use ALL clear-sky days for calibration.
+# 2. Use the "box blur" (windowed) forecast as the basis for error calculation.
 #
 # Workflow:
-# 1. Filter the list of clear-sky days to include only Spring/Summer months (April-August).
-# 2. Randomly split these seasonal days into a 'calibration set' and a 'validation set'.
+# 1. Use the full list of clear-sky days.
+# 2. Randomly split these days into a 'calibration set' and a 'validation set'.
 # 3. Define an 'objective function' that takes k-values as input and returns
 #    the average forecast error (RMSE) across all days in the calibration set.
 # 4. Use `scipy.optimize.minimize` with the Nelder-Mead method to find the
@@ -18,7 +19,7 @@
 # 6. As a benchmark, calculate the error on the validation set using the original,
 #    uncalibrated k-values.
 # 7. Report the final k-values and compare the performance of the calibrated vs.
-#    original models for the Spring/Summer period.
+#    original models.
 
 import numpy as np
 import pandas as pd
@@ -47,10 +48,6 @@ LIST_OF_CLEAR_LOOKING_DAYS = [
     datetime(2021, 9, 22), datetime(2021, 9, 27), datetime(2021, 9, 28),
     datetime(2021, 10, 3)
 ]
-
-# --- NEW: Filter for Spring/Summer days only (April to August) ---
-SPRING_SUMMER_DAYS = [day for day in LIST_OF_CLEAR_LOOKING_DAYS if 4 <= day.month <= 8]
-
 
 # Global variable to hold pre-loaded PV data
 PV_DATA_CACHE = {}
@@ -91,24 +88,25 @@ def run_calibration():
     Main function to perform the optimization and validation.
     """
     print("--- Starting k-value calibration process ---")
-    print("--- FOCUSING ON SPRING/SUMMER (APR-AUG) DATA ONLY ---")
+    # print("--- USING ALL MONTHS & BOX BLUR MODEL FOR CALIBRATION ---")
+
     start_time = time.time()
 
     # --- 2. Split data into calibration and validation sets ---
-    random.shuffle(SPRING_SUMMER_DAYS)
-    split_index = int(len(SPRING_SUMMER_DAYS) * 0.7) # 70/30 split
+    random.shuffle(LIST_OF_CLEAR_LOOKING_DAYS)
+    split_index = int(len(LIST_OF_CLEAR_LOOKING_DAYS) * 0.7) # 70/30 split
     global CALIBRATION_DAYS, VALIDATION_DAYS
-    CALIBRATION_DAYS = SPRING_SUMMER_DAYS[:split_index]
-    VALIDATION_DAYS = SPRING_SUMMER_DAYS[split_index:]
+    CALIBRATION_DAYS = LIST_OF_CLEAR_LOOKING_DAYS[:split_index]
+    VALIDATION_DAYS = LIST_OF_CLEAR_LOOKING_DAYS[split_index:]
 
-    print(f"Total clear Spring/Summer days: {len(SPRING_SUMMER_DAYS)}")
+    print(f"Total clear days: {len(LIST_OF_CLEAR_LOOKING_DAYS)}")
     print(f"Using {len(CALIBRATION_DAYS)} days for calibration.")
     print(f"Using {len(VALIDATION_DAYS)} days for validation.")
 
     # --- Pre-load all necessary PV data into a cache ---
     print("Pre-loading PV data for all selected days...")
     full_pv_data = csv_reader.get_year(2021) # Assuming all days are in 2021
-    for day in SPRING_SUMMER_DAYS:
+    for day in LIST_OF_CLEAR_LOOKING_DAYS:
         time_end = day + pd.Timedelta(days=1)
         # FIX: Use .copy() to prevent SettingWithCopyWarning downstream
         PV_DATA_CACHE[day] = full_pv_data[(full_pv_data.index >= day) & (full_pv_data.index < time_end)].copy()
@@ -139,7 +137,7 @@ def run_calibration():
     print(f"Optimal k-values found: {optimal_k_coeffs}")
     
     # Generate the final, optimal shadow matrix
-    optimal_matrix_path = 'results/shadow_matrix_results/optimal_shadow_matrix_spring_summer.csv'
+    optimal_matrix_path = 'results/shadow_matrix_results/optimal_shadow_matrix.csv'
     simulation_engine.generate_shadow_matrix(optimal_k_coeffs, optimal_matrix_path)
 
     # Calculate error on the validation set
@@ -172,7 +170,7 @@ def run_calibration():
     average_original_error = original_error_total / len(VALIDATION_DAYS)
 
     # --- 6. Report the final results ---
-    print("\n--- Final Results for Spring/Summer Calibration ---")
+    print("\n--- Final Results for Full-Year Calibration ---")
     print(f"Total execution time: {(time.time() - start_time) / 60:.2f} minutes")
     print("\nOptimal k-values:")
     for veg_class, k_val in optimal_k_coeffs.items():
@@ -184,9 +182,9 @@ def run_calibration():
     print(f"Average RMSE with ORIGINAL k's:  {average_original_error:.4f} W")
     
     # Save the optimal k-values
-    with open("optimal_k_values_spring_summer.txt", "w") as f:
+    with open("optimal_k_values.txt", "w") as f:
         f.write(str(optimal_k_coeffs))
-    print("\nOptimal k-values saved to 'optimal_k_values_spring_summer.txt'")
+    print("\nOptimal k-values saved to 'optimal_k_values.txt'")
 
 
 if __name__ == '__main__':
