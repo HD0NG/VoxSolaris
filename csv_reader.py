@@ -1,7 +1,9 @@
 import pandas
 
+# import pandas as pd
+# import numpy as np
 
-
+# from pandas.errors import AmbiguousTimeError
 """
 This file contains functions for loading csv file as dataframes. Including shadowmaps and pvdata + others if expanded
 """
@@ -76,3 +78,68 @@ def get_year(year):
     df.index = df.index.tz_convert("UTC")
     df.index = df.index.tz_convert(None)
     return df
+
+# def get_year(year: int) -> pd.DataFrame | None:
+#     year_txt = str(year - 2000)
+#     df = pd.read_excel(
+#         f"pvdata/pv_{year_txt}.xlsx",
+#         skiprows=[1],
+#         parse_dates=["Päivämäärä ja aika"],
+#         # If decimals use commas in your export, uncomment:
+#         # decimal=",",
+#     )
+#     if df is None or df.empty:
+#         return None
+
+#     ts_col = "Päivämäärä ja aika"
+#     e_mpp1_col = "Energia MPP1 | Symo 8.2-3-M (1)"
+
+#     # Ensure datetime index (Finnish format often parsed already by read_excel)
+#     df = df.set_index(ts_col)
+#     df.index = pd.to_datetime(df.index, errors="coerce")
+
+
+
+#     # Local time → UTC (handles DST). Prefer infer for ambiguous transitions.
+#     # df.index = df.index.tz_localize("Europe/Helsinki", ambiguous="infer", nonexistent="shift_forward")
+#     try:
+#     # try the simple, DST-aware path first
+#         df.index = df.index.tz_localize("Europe/Helsinki",
+#                                         ambiguous="infer",
+#                                         nonexistent="shift_forward")
+#     except Exception:
+#         # build an explicit ambiguous mask:
+#         # for duplicated wall-times (only occur at fall-back), mark the FIRST as DST (True),
+#         # the SECOND as standard time (False)
+#         is_second_occurrence = df.index.duplicated(keep="first")
+#         ambiguous_mask = ~is_second_occurrence
+
+#         df.index = df.index.tz_localize("Europe/Helsinki",
+#                                         ambiguous=ambiguous_mask,
+#                                         nonexistent="shift_forward")
+
+#     # convert to naive UTC if you want to keep the index timezone-free
+#     df.index = df.index.tz_convert("UTC").tz_convert(None)
+
+#     # df.index = df.index.tz_convert("UTC").tz_convert(None)  # naive UTC
+
+#     # Make sure energy column is numeric
+#     df[e_mpp1_col] = pd.to_numeric(df[e_mpp1_col], errors="coerce")
+
+#     # If it's per-interval Wh, convert to average W using actual interval length
+#     dt_hours = df.index.to_series().diff().dt.total_seconds() / 3600.0
+#     # If the first delta is NaN, forward-fill with the median interval length
+#     dt_hours.iloc[0] = dt_hours.median(skipna=True)
+
+#     df["P_MPP1_W"] = (df[e_mpp1_col] / dt_hours).clip(lower=0)  # Wh / h = W
+
+#     # Optional: also compute kW and keep the original Wh
+#     df["P_MPP1_kW"] = df["P_MPP1_W"] / 1000.0
+
+#     # Handy aggregations
+#     df["E_MPP1_kWh"] = df[e_mpp1_col] / 1000.0
+#     hourly_energy_kWh = df["E_MPP1_kWh"].resample("H").sum(min_count=1)
+#     daily_energy_kWh  = df["E_MPP1_kWh"].resample("D").sum(min_count=1)
+
+#     # Return the full df; you can also return the aggregates if you like
+#     return df
