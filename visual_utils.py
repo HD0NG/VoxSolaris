@@ -137,7 +137,24 @@ def _open_las_any(path, prefer="auto"):
         )
     return laspy.open(path)
 
-def plot_shadow_matrix_with_sunpaths(matrix_path, lat=62.9798, lon=27.6486, fill_missing=True):
+def _aoi_boundary(panel_tilt_deg, panel_az_deg, n=360):
+    """
+    Return (theta_rad, r_deg) for the 90° AOI boundary above the horizon.
+
+    Parametrises from (panel_az + 90°) to (panel_az + 270°), the back-facing
+    arc where the boundary is above the horizon.  Altitude at each point:
+        tan(alt) = -tan(beta) * cos(az - phi_p)
+    """
+    beta  = np.radians(panel_tilt_deg)
+    phi_p = np.radians(panel_az_deg)
+    az    = np.linspace(phi_p + np.pi / 2, phi_p + 3 * np.pi / 2, n)
+    alt   = np.degrees(np.arctan(-np.tan(beta) * np.cos(az - phi_p)))
+    return az, 90.0 - alt          # r = zenith angle (matches polar-plot axes)
+
+
+def plot_shadow_matrix_with_sunpaths(matrix_path, lat=62.9798, lon=27.6486,
+                                     fill_missing=True,
+                                     panel_tilt_deg=12.0, panel_az_deg=170.0):
     print("Loading shadow matrix...")
     df = pd.read_csv(matrix_path, index_col=0)
 
@@ -148,21 +165,23 @@ def plot_shadow_matrix_with_sunpaths(matrix_path, lat=62.9798, lon=27.6486, fill
     theta_grid = np.radians(azimuths)
     Theta, R = np.meshgrid(theta_grid, r_grid)
 
-    fig, ax = plt.subplots(figsize=(12, 10), subplot_kw={'projection': 'polar'})
-    ax.set_theta_zero_location('N')  
-    ax.set_theta_direction(-1)       
-    ax.set_rlim(0, 90)               
+    fig, ax = plt.subplots(figsize=(10, 8), subplot_kw={'projection': 'polar'},
+                           constrained_layout=True)
+    ax.set_theta_zero_location('N')
+    ax.set_theta_direction(-1)
+    ax.set_rlim(0, 90)
 
     yticks = range(0, 91, 10)
     ax.set_yticks(yticks)
-    ax.set_yticklabels([f"{90-y}°" for y in yticks], color='black')
+    ax.set_yticklabels([f"{90-y}°" for y in yticks], color='black', fontsize=9)
 
     cmap = copy.copy(plt.cm.gray_r)
-    cmap.set_bad(color='#1e272e') # Deep slate color for missing data
+    cmap.set_bad(color='#1e272e')
 
     c = ax.pcolormesh(Theta, R, df.values, cmap=cmap, vmin=0, vmax=1, shading='auto')
     cbar = fig.colorbar(c, ax=ax, shrink=0.8, pad=0.1)
-    cbar.set_label('Shadow Intensity (1 - Transmittance)', rotation=270, labelpad=20)
+    cbar.set_label('Shadow Intensity (1 - Transmittance)', rotation=270, labelpad=20, fontsize=11)
+    cbar.ax.tick_params(labelsize=9)
 
     print("Calculating seasonal sun paths...")
     tz = 'Europe/Helsinki'
@@ -201,14 +220,115 @@ def plot_shadow_matrix_with_sunpaths(matrix_path, lat=62.9798, lon=27.6486, fill
             color='#f1c40f', label='Summer Solstice (Jun 21)', linewidth=3)
     ax.plot(np.radians(daylight_equinox['azimuth']), daylight_equinox['apparent_zenith'], 
             color='#2ecc71', label='Equinox (Mar/Sep 21)', linewidth=3)
-    ax.plot(np.radians(daylight_winter['azimuth']), daylight_winter['apparent_zenith'], 
+    ax.plot(np.radians(daylight_winter['azimuth']), daylight_winter['apparent_zenith'],
             color='#3498db', label='Winter Solstice (Dec 21)', linewidth=3)
 
-    plt.title("Shadow Matrix Polar Plot\n", fontsize=14)
-    ax.legend(loc='lower left', bbox_to_anchor=(1.0, 1.0))
-    plt.tight_layout()
+    az_aoi, r_aoi = _aoi_boundary(panel_tilt_deg, panel_az_deg)
+    ax.plot(az_aoi, r_aoi, color='#e74c3c', linestyle='--', linewidth=2,
+            label=f'90° AOI Boundary (tilt={panel_tilt_deg:.0f}°, az={panel_az_deg:.0f}°)',
+            zorder=5)
+
+    ax.set_title('Bank 1 Shadow Matrix — Polar Hemispherical View\n', fontsize=13)
+    handles, labels = ax.get_legend_handles_labels()
+    fig.legend(handles, labels, loc='upper right', fontsize=10, framealpha=0.9)
     plt.show()
 
+
+
+def plot_shadow_polar_b2(
+    north_path: str,
+    south_path: str,
+    lat: float = 62.9798,
+    lon: float = 27.6486,
+    fill_missing: bool = True,
+    panel_tilt_deg: float = 20.0,
+    panel_az_deg: float = 260.0,
+):
+    """
+    Side-by-side polar shadow matrix plots for Bank 2 (North and South sub-arrays).
+    Shares a single colorbar and sun-path legend.
+    """
+    def _load(path):
+        df = pd.read_csv(path, index_col=0)
+        azimuths = np.array([float(c.split('_')[1]) for c in df.columns])
+        elevations = np.array([float(i.split('_')[1]) for i in df.index])
+        Theta, R = np.meshgrid(np.radians(azimuths), 90.0 - elevations)
+        return df, Theta, R
+
+    df_n, Th_n, R_n = _load(north_path)
+    df_s, Th_s, R_s = _load(south_path)
+
+    # Sun paths
+    tz = 'Europe/Helsinki'
+    times_summer  = pd.date_range('2021-06-21 00:00', '2021-06-21 23:59', freq='10min', tz=tz)
+    times_equinox = pd.date_range('2021-09-21 00:00', '2021-09-21 23:59', freq='10min', tz=tz)
+    times_winter  = pd.date_range('2021-12-21 00:00', '2021-12-21 23:59', freq='10min', tz=tz)
+    sol_s = pvlib.solarposition.get_solarposition(times_summer,  lat, lon)
+    sol_e = pvlib.solarposition.get_solarposition(times_equinox, lat, lon)
+    sol_w = pvlib.solarposition.get_solarposition(times_winter,  lat, lon)
+    day_s = sol_s[sol_s['elevation'] > 0].sort_values('azimuth')
+    day_e = sol_e[sol_e['elevation'] > 0]
+    day_w = sol_w[sol_w['elevation'] > 0]
+
+    theta_fill = np.radians(np.linspace(0, 360, 360))
+    deg_fill   = np.linspace(0, 360, 360)
+    max_el     = np.interp(deg_fill, day_s['azimuth'].values,
+                           day_s['elevation'].values, left=0, right=0) + 2.0
+    r_fill     = 90.0 - max_el
+
+    cmap = copy.copy(plt.cm.gray_r)
+    cmap.set_bad(color='#1e272e')
+
+    fig, axes = plt.subplots(
+        1, 2,
+        figsize=(18, 8),
+        subplot_kw={'projection': 'polar'},
+        constrained_layout=True,
+    )
+    titles = ['Bank 2 — North sub-array (8 panels)', 'Bank 2 — South sub-array (6 panels)']
+    data   = [(df_n, Th_n, R_n), (df_s, Th_s, R_s)]
+
+    pc = None
+    for ax, (df, Th, R), title in zip(axes, data, titles):
+        pc = ax.pcolormesh(Th, R, df.values, cmap=cmap, vmin=0, vmax=1, shading='auto')
+        ax.set_theta_zero_location('N')
+        ax.set_theta_direction(-1)
+        ax.set_rlim(0, 90)
+        ax.set_rlabel_position(0)
+        yticks = np.arange(0, 91, 10)
+        ax.set_yticks(yticks)
+        ax.set_yticklabels([f'{90-y}°' for y in yticks], fontsize=9, color='black')
+        ax.grid(True, linestyle='--', alpha=0.5)
+        ax.set_title(f'{title}\n', fontsize=11, pad=10)
+
+        if fill_missing:
+            ax.fill_between(theta_fill, 0, r_fill,
+                            color='white', edgecolor='#BFC6C4',
+                            hatch='/', alpha=1.0,
+                            label='Uncomputed Zone (Outside Sun Path)')
+
+        ax.plot(np.radians(day_s['azimuth']), day_s['apparent_zenith'],
+                color='#f1c40f', linewidth=2, label='Summer solstice (Jun 21)')
+        ax.plot(np.radians(day_e['azimuth']), day_e['apparent_zenith'],
+                color='#2ecc71', linewidth=2, label='Equinox (Mar/Sep 21)')
+        ax.plot(np.radians(day_w['azimuth']), day_w['apparent_zenith'],
+                color='#3498db', linewidth=2, label='Winter solstice (Dec 21)')
+
+        az_aoi, r_aoi = _aoi_boundary(panel_tilt_deg, panel_az_deg)
+        ax.plot(az_aoi, r_aoi, color='#e74c3c', linestyle='--', linewidth=2,
+                label=f'90° AOI Boundary (tilt={panel_tilt_deg:.0f}°, az={panel_az_deg:.0f}°)',
+                zorder=5)
+
+    # Shared colorbar
+    cbar = fig.colorbar(pc, ax=axes.tolist(), pad=0.08, shrink=0.6, aspect=25)
+    cbar.set_label('Shadow Intensity (1 - Transmittance)', rotation=270, labelpad=18, fontsize=11)
+    cbar.ax.tick_params(labelsize=9)
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='upper right', fontsize=10, framealpha=0.9)
+
+    fig.suptitle('Bank 2 Shadow Matrix — Polar Hemispherical View', fontsize=13)
+    plt.show()
 
 
 def view_lidar_classes(
