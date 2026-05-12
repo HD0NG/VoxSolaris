@@ -7,6 +7,9 @@ data/
 output/
 results/
 final_results/
+all_days_plots/
+all_days_plots_b2/
+
 # achived folder
 archive/
 # htmls
@@ -29,6 +32,7 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
+.claude/
 
 
 # Byte-compiled / optimized / DLL files
