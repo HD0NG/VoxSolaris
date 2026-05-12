@@ -8,6 +8,16 @@ The engine employs a cone-casting methodology to account for the sun's angular d
 
 The final output is a detailed shadow attenuation matrix, a CSV file quantifying the solar transmittance at a specific point for every degree of the sky, making it an ideal input for a wide range of scientific applications.
 
+## FMI PV Forecasting Model
+VoxSolaris uses the FMI PV forecasting model as the baseline photovoltaic production model before applying site-specific shadow correction. The analysis modules (`pv_analysis_re.py` and `pv_analysis_b2.py`) import `fmi_pv_forecaster` as `pvfc`, configure it with the project site location, panel tilt, panel azimuth, and nominal system power, then call `pvfc.process_radiation_df(...)` to produce the unshaded FMI base forecast.
+
+The model input is an `extra_data` DataFrame containing irradiance and weather variables such as DNI, DHI, GHI, temperature, wind speed, and albedo. In this project, those inputs are built from FMI radiation and weather CSV data, with optional CAMS irradiance support. VoxSolaris then combines the FMI base forecast with the voxel-derived shadow attenuation matrix to produce a shadow-corrected PV forecast for comparison against measured inverter output.
+
+The FMI PV forecaster is referenced from:
+<https://github.com/TimoSalola/fmi_pv_forecaster.git>
+
+A packaged wheel for this dependency is also included under `whl/` for local installation.
+
 ## Key Features
 - Voxel-Based Representation: Accurately models true 3D environments, including vertical facades, overhangs, and complex canopy structures, overcoming the limitations of 2.5D DSM/raster methods.
 
