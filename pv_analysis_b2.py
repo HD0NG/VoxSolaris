@@ -790,7 +790,7 @@ def plot_real_vs_predicted_scatter(
     all_pred,
     title: str = "Real vs. Predicted Power Output",
     ylabel: str = "Predicted (W)",
-    power_threshold: float = 50.0,
+    power_threshold: float = 10.0,
     save_path: Optional[str] = None,
 ):
     """Publication-quality scatter plot with R^2 trendline.
@@ -1016,12 +1016,12 @@ def print_performance_summary(
 
     if real_arr is not None and base_arr is not None and shaded_arr is not None:
         import numpy as np
-        mask = (np.asarray(real_arr) > 0) | (np.asarray(base_arr) > 0)
-        r = np.asarray(real_arr)[mask]
-        b = np.asarray(base_arr)[mask]
-        s = np.asarray(shaded_arr)[mask]
-        r2_b = r2_score(r, b)
-        r2_s = r2_score(r, s)
+        r = np.asarray(real_arr, dtype=np.float64)
+        b = np.asarray(base_arr, dtype=np.float64)
+        s = np.asarray(shaded_arr, dtype=np.float64)
+        mask = r > 10.0  # matches power_threshold in plot_real_vs_predicted_scatter
+        r2_b = r2_score(r[mask], b[mask])
+        r2_s = r2_score(r[mask], s[mask])
         print(f"\n  R2    Base:   {r2_b:>8.3f}")
         print(f"  R2    Shaded: {r2_s:>8.3f}")
     elif "R2_Base" in results_df.columns:
