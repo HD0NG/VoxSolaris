@@ -15,7 +15,6 @@ Key features:
 
 from __future__ import annotations
 
-import collections
 import os
 import warnings
 from dataclasses import dataclass
@@ -149,32 +148,111 @@ def compute_hemisphere_shadow_factor(shadow_matrix: np.ndarray) -> float:
 # 3. CLEAR-DAY DETECTION
 # ============================================================================
 
+def _parse_clear_sky_minutes_file(file_path: Union[str, Path]) -> pd.DataFrame:
+    """Parse RH16 clear-minute timestamps and return one row per day."""
+    timestamps = []
+    with open(file_path, "r") as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) < 6:
+                continue
+            ts = pd.to_datetime(
+                " ".join(parts[:6]),
+                format="%Y %m %d %H %M %S",
+                errors="coerce",
+            )
+            if pd.notna(ts):
+                timestamps.append(ts)
+
+    if not timestamps:
+        return pd.DataFrame(columns=["Date", "LineCount"])
+
+    idx = pd.DatetimeIndex(timestamps)
+    counts = pd.Series(1, index=idx).groupby(idx.date).sum()
+    return pd.DataFrame({"Date": counts.index, "LineCount": counts.values})
+
+
+def _estimate_daylight_minutes(
+    dates,
+    latitude: float,
+    longitude: float,
+    timestamp_tz: str = "UTC",
+    daylight_altitude_deg: float = 0.0,
+) -> pd.Series:
+    """
+    Estimate daylight minutes for each date using apparent solar elevation.
+
+    The clear-minute file is produced from minute-level data. This helper
+    mirrors that cadence so clear-sky ranking can use clear minutes divided by
+    physically available daylight minutes instead of raw daily totals.
+    """
+    daylight_counts = {}
+    for date_obj in dates:
+        start = pd.Timestamp(date_obj).tz_localize(timestamp_tz)
+        times = pd.date_range(start=start, periods=24 * 60, freq="1min")
+        solpos = pvlib.solarposition.get_solarposition(times, latitude, longitude)
+        if "apparent_elevation" in solpos.columns:
+            elevation = solpos["apparent_elevation"]
+        else:
+            elevation = 90.0 - solpos["apparent_zenith"]
+        daylight_counts[date_obj] = int((elevation > daylight_altitude_deg).sum())
+    return pd.Series(daylight_counts, name="DaylightMinutes")
+
+
 def find_clear_days(
     file_path: Union[str, Path],
     threshold: float = 0.8,
+    ranking_mode: str = "line_count",
+    latitude: Optional[float] = None,
+    longitude: Optional[float] = None,
+    timestamp_tz: str = "UTC",
+    daylight_altitude_deg: float = 0.0,
 ) -> pd.DataFrame:
     """
     Identify clear days from a clear-sky-minutes file.
 
-    Heuristic: days with line counts above Q3 + threshold * IQR.
+    Heuristic: days with ranking values above Q3 + threshold * IQR.
     threshold=0.8 is intentionally permissive (standard outlier = 1.5).
-    """
-    counts: dict[str, int] = collections.Counter()
-    with open(file_path, "r") as f:
-        for line in f:
-            day = line[:10].strip()
-            if day:
-                counts[day] += 1
 
-    df = pd.DataFrame(list(counts.items()), columns=["Date", "LineCount"])
-    q1, q3 = df["LineCount"].quantile(0.25), df["LineCount"].quantile(0.75)
+    ranking_mode:
+      - "line_count": preserves the original raw clear-minute ranking.
+      - "daylight_fraction": ranks by clear minutes / daylight minutes,
+        addressing the reviewer TODO about high-latitude daylight duration.
+    """
+    df = _parse_clear_sky_minutes_file(file_path)
+    if df.empty:
+        warnings.warn(f"No clear-minute timestamps found in {file_path}")
+        return df
+
+    df["ClearMinutes"] = df["LineCount"]
+
+    if ranking_mode == "daylight_fraction":
+        lat = DEFAULT_CFG.latitude if latitude is None else latitude
+        lon = DEFAULT_CFG.longitude if longitude is None else longitude
+        daylight = _estimate_daylight_minutes(
+            df["Date"],
+            latitude=lat,
+            longitude=lon,
+            timestamp_tz=timestamp_tz,
+            daylight_altitude_deg=daylight_altitude_deg,
+        )
+        df["DaylightMinutes"] = df["Date"].map(daylight).astype(float)
+        df["ClearFraction"] = df["ClearMinutes"] / df["DaylightMinutes"].replace(0, np.nan)
+        ranking_col = "ClearFraction"
+        units = "fraction"
+    elif ranking_mode == "line_count":
+        ranking_col = "LineCount"
+        units = "minutes"
+    else:
+        raise ValueError("ranking_mode must be 'line_count' or 'daylight_fraction'")
+
+    q1, q3 = df[ranking_col].quantile(0.25), df[ranking_col].quantile(0.75)
     upper_bound = q3 + threshold * (q3 - q1)
 
-    sig = df[df["LineCount"] > upper_bound].copy()
-    sig = sig.sort_values("LineCount", ascending=False)
-    sig["Date"] = pd.to_datetime(sig["Date"], format="%Y %m %d").dt.date
+    sig = df[df[ranking_col] > upper_bound].copy()
+    sig = sig.sort_values(ranking_col, ascending=False)
     print(f"Found {len(sig)} clear days (threshold: Q3 + {threshold} * IQR "
-          f"= {upper_bound:.0f} minutes)")
+          f"= {upper_bound:.3f} {units}, mode={ranking_mode})")
     return sig
 
 
@@ -648,6 +726,84 @@ def _plot_day_comparison(day_data, fb_n, fw_n, target_date_obj, full_day_index,
         plt.show()
 
 
+def plot_residual_diagnostics(
+    day_data: pd.DataFrame,
+    forecast_base: pd.DataFrame,
+    forecast_windowed: pd.DataFrame,
+    df_extra: pd.DataFrame,
+    cfg: SiteConfig = DEFAULT_CFG,
+    target_time: str = "2021-07-04 10:15",
+    window: str = "90min",
+    save_path: Optional[Union[str, Path]] = None,
+    table_path: Optional[Union[str, Path]] = None,
+) -> pd.DataFrame:
+    """
+    Prepare a local-time diagnostic view around a residual mismatch.
+
+    This is for the manuscript TODO around 2021-07-04 10:15. It deliberately
+    plots and exports evidence only; interpretation of irradiance or inverter
+    behaviour still needs a manual scientific check.
+    """
+    target = pd.Timestamp(target_time)
+    half_window = pd.Timedelta(window)
+    start = target - half_window
+    end = target + half_window
+
+    power = pd.DataFrame(index=day_data.index)
+    power["Measured_W"] = day_data["Power_W"].fillna(0.0)
+    power["Baseline_W"] = forecast_base["output"].reindex(power.index, fill_value=0.0)
+    power["ShadowCorrected_W"] = forecast_windowed["output_shaded"].reindex(
+        power.index, fill_value=0.0
+    )
+    power["Residual_Baseline_W"] = power["Baseline_W"] - power["Measured_W"]
+    power["Residual_ShadowCorrected_W"] = (
+        power["ShadowCorrected_W"] - power["Measured_W"]
+    )
+
+    extra_local = _shift_index_to_local(df_extra.copy(), target.date(), cfg.tz)
+    irradiance_cols = [c for c in ("ghi", "dhi", "dni") if c in extra_local.columns]
+    diagnostic = power.join(extra_local[irradiance_cols], how="outer")
+    diagnostic = diagnostic.loc[start:end]
+
+    if table_path:
+        Path(table_path).parent.mkdir(parents=True, exist_ok=True)
+        diagnostic.to_csv(table_path, index_label="local_time")
+        print(f"Saved residual diagnostic table: {table_path}")
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+    axes[0].plot(diagnostic.index, diagnostic["Measured_W"], label="Measured", color="#2ecc71")
+    axes[0].plot(diagnostic.index, diagnostic["Baseline_W"], label="Baseline", color="#3498db", ls="--")
+    axes[0].plot(diagnostic.index, diagnostic["ShadowCorrected_W"], label="Shadow-corrected", color="#e67e22")
+    axes[0].axvline(target, color="#444444", lw=1.2, ls=":")
+    axes[0].set_ylabel("Power (W)")
+    axes[0].legend(loc="upper right")
+    axes[0].grid(True, alpha=0.3)
+
+    if irradiance_cols:
+        for col in irradiance_cols:
+            axes[1].plot(diagnostic.index, diagnostic[col], label=col.upper())
+        axes[1].legend(loc="upper right")
+    axes[1].axvline(target, color="#444444", lw=1.2, ls=":")
+    axes[1].set_ylabel("Irradiance (W m$^{-2}$)")
+    axes[1].set_xlabel("Time (Local)")
+    axes[1].grid(True, alpha=0.3)
+
+    axes[0].set_title(f"Residual diagnostic around {target:%Y-%m-%d %H:%M}")
+    axes[1].xaxis.set_major_locator(mdates.MinuteLocator(interval=15))
+    axes[1].xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+    plt.tight_layout()
+
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=200, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
+        print(f"Saved residual diagnostic plot: {save_path}")
+    else:
+        plt.show()
+
+    return diagnostic
+
+
 def save_all_day_plots(
     significant_days_df: pd.DataFrame,
     shadow_matrix: np.ndarray,
@@ -702,11 +858,15 @@ def plot_real_vs_predicted_scatter(
     power_threshold: float = 50.0,
     save_path: Optional[str] = None,
 ):
-    """Publication-quality scatter plot with R^2 trendline."""
+    """Publication-quality scatter plot with R^2 trendline.
+
+    Filtering uses measured power only, matching the manuscript's daytime
+    definition and avoiding nighttime-zero inflation.
+    """
     real_arr = np.asarray(all_real, dtype=np.float64)
     pred_arr = np.asarray(all_pred, dtype=np.float64)
 
-    mask = (real_arr > power_threshold) | (pred_arr > power_threshold)
+    mask = real_arr > power_threshold
     if mask.sum() < 3:
         warnings.warn("Not enough daytime data points for scatter plot.")
         return
@@ -751,35 +911,60 @@ def compute_metrics(
     forecast_base: pd.DataFrame,
     forecast_windowed: pd.DataFrame,
     interval_minutes: float = 5.0,
+    min_power_threshold: float = 10.0,
 ) -> dict:
     """
     Compute RMSE, MAE, MBE, R^2, and energy totals for one day.
 
-    R^2 is computed on daytime-only data (> 10 W) to avoid inflating
-    the score with trivial nighttime zeros.
+    All reported metrics use measured daytime samples only
+    (Power_W > min_power_threshold), matching the manuscript definition and
+    avoiding bias from trivial nighttime zeros.
     """
-    real = day_data["Power_W"].fillna(0.0).values
-    base = forecast_base["output"].fillna(0.0).values
-    shaded = forecast_windowed["output_shaded"].fillna(0.0).values
-
     hours_per_step = interval_minutes / 60.0
 
-    daytime = (real > 10) | (base > 10)
-    r2_base = r2_score(real[daytime], base[daytime]) if daytime.sum() > 2 else np.nan
-    r2_shaded = r2_score(real[daytime], shaded[daytime]) if daytime.sum() > 2 else np.nan
+    real = day_data["Power_W"].reindex(day_data.index).fillna(0.0)
+    base = forecast_base["output"].reindex(day_data.index, fill_value=0.0).fillna(0.0)
+    shaded = forecast_windowed["output_shaded"].reindex(day_data.index, fill_value=0.0).fillna(0.0)
+
+    daytime = real > min_power_threshold
+    n_daytime = int(daytime.sum())
+    if n_daytime == 0:
+        warnings.warn("No measured daytime samples available for metric calculation.")
+        return {
+            "RMSE_Base": np.nan,
+            "RMSE_Shaded": np.nan,
+            "MAE_Base": np.nan,
+            "MAE_Shaded": np.nan,
+            "MBE_Base": np.nan,
+            "MBE_Shaded": np.nan,
+            "R2_Base": np.nan,
+            "R2_Shaded": np.nan,
+            "Real_Wh": 0.0,
+            "Base_Wh": 0.0,
+            "Shaded_Wh": 0.0,
+            "N_daytime": 0,
+        }
+
+    r = real[daytime].values
+    b = base[daytime].values
+    s = shaded[daytime].values
+
+    r2_base = r2_score(r, b) if n_daytime > 2 else np.nan
+    r2_shaded = r2_score(r, s) if n_daytime > 2 else np.nan
 
     return {
-        "RMSE_Base": np.sqrt(mean_squared_error(real, base)),
-        "RMSE_Shaded": np.sqrt(mean_squared_error(real, shaded)),
-        "MAE_Base": mean_absolute_error(real, base),
-        "MAE_Shaded": mean_absolute_error(real, shaded),
-        "MBE_Base": float(np.mean(base - real)),
-        "MBE_Shaded": float(np.mean(shaded - real)),
+        "RMSE_Base": np.sqrt(mean_squared_error(r, b)),
+        "RMSE_Shaded": np.sqrt(mean_squared_error(r, s)),
+        "MAE_Base": mean_absolute_error(r, b),
+        "MAE_Shaded": mean_absolute_error(r, s),
+        "MBE_Base": float(np.mean(b - r)),
+        "MBE_Shaded": float(np.mean(s - r)),
         "R2_Base": r2_base,
         "R2_Shaded": r2_shaded,
-        "Real_Wh": float(real.sum() * hours_per_step),
-        "Base_Wh": float(base.sum() * hours_per_step),
-        "Shaded_Wh": float(shaded.sum() * hours_per_step),
+        "Real_Wh": float(real[daytime].clip(lower=0).sum() * hours_per_step),
+        "Base_Wh": float(base[daytime].clip(lower=0).sum() * hours_per_step),
+        "Shaded_Wh": float(shaded[daytime].clip(lower=0).sum() * hours_per_step),
+        "N_daytime": n_daytime,
     }
 
 
@@ -857,8 +1042,18 @@ def evaluate_performance(
 # 12. PERFORMANCE SUMMARY
 # ============================================================================
 
-def print_performance_summary(results_df: pd.DataFrame):
-    """Pretty-print aggregate metrics."""
+def print_performance_summary(
+    results_df: pd.DataFrame,
+    real_arr=None,
+    base_arr=None,
+    shaded_arr=None,
+):
+    """Pretty-print aggregate metrics.
+
+    Pass real_arr / base_arr / shaded_arr (concatenated across all days) to get
+    aggregate R² consistent with the scatter plots.  Without them, R² falls back
+    to the mean of per-day values, which diverges when day-level bias is large.
+    """
     if results_df.empty:
         print("No results to summarise.")
         return
@@ -884,11 +1079,21 @@ def print_performance_summary(results_df: pd.DataFrame):
     print(f"\n  MBE   Base:   {mbe_b:>+8.2f} W")
     print(f"  MBE   Shaded: {mbe_s:>+8.2f} W")
 
-    if "R2_Base" in results_df.columns:
-        r2_b = results_df["R2_Base"].mean()
-        r2_s = results_df["R2_Shaded"].mean()
+    if real_arr is not None and base_arr is not None and shaded_arr is not None:
+        import numpy as np
+        mask = (np.asarray(real_arr) > 0) | (np.asarray(base_arr) > 0)
+        r = np.asarray(real_arr)[mask]
+        b = np.asarray(base_arr)[mask]
+        s = np.asarray(shaded_arr)[mask]
+        r2_b = r2_score(r, b)
+        r2_s = r2_score(r, s)
         print(f"\n  R2    Base:   {r2_b:>8.3f}")
         print(f"  R2    Shaded: {r2_s:>8.3f}")
+    elif "R2_Base" in results_df.columns:
+        r2_b = results_df["R2_Base"].mean()
+        r2_s = results_df["R2_Shaded"].mean()
+        print(f"\n  R2    Base:   {r2_b:>8.3f}  (mean of per-day)")
+        print(f"  R2    Shaded: {r2_s:>8.3f}  (mean of per-day)")
 
     print("\n  --- Energy Yield ---")
     t_real = results_df["Real_Wh"].sum() / 1000

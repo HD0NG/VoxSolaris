@@ -34,6 +34,7 @@ def evaluate_all_days(
     cfg,
     min_power_threshold: float = 10.0,
     output_csv: Optional[str] = None,
+    analysis_func: Optional[Callable] = None,
 ) -> Tuple[pd.DataFrame, list, list, list]:
     """
     Run pv_analysis for every day in [start_date, end_date] and compute
@@ -51,6 +52,9 @@ def evaluate_all_days(
         Exclude timesteps where real power < threshold (nighttime filter).
     output_csv : str, optional
         If given, save per-day results to this CSV.
+    analysis_func : callable, optional
+        Defaults to pv_analysis_re.pv_analysis. Bank 2 notebooks can pass their
+        dual-matrix wrapper directly instead of monkey-patching imports.
 
     Returns
     -------
@@ -58,7 +62,9 @@ def evaluate_all_days(
     all_real, all_base, all_shad : lists — concatenated 5-min values (daytime only)
     """
     import tqdm
-    from pv_analysis_re import pv_analysis
+
+    if analysis_func is None:
+        from pv_analysis_re import pv_analysis as analysis_func
 
     dates = pd.date_range(start_date, end_date, freq="D")
     print(f"Evaluating {len(dates)} days: {start_date} → {end_date}")
@@ -78,7 +84,7 @@ def evaluate_all_days(
                 skipped += 1
                 continue
 
-            day_data, fb_n, fw_n = pv_analysis(
+            day_data, fb_n, fw_n = analysis_func(
                 date_obj, shadow_matrix, excel_df, df_extra, cfg=cfg, plot=False
             )
 
@@ -98,7 +104,7 @@ def evaluate_all_days(
             s = shaded[daytime].values
 
             # Per-day metrics
-            hours_per_step = 5.0 / 60.0
+            hours_per_step = cfg.interval_minutes / 60.0
             metrics = {
                 "Date": str(date_obj),
                 "RMSE_Base":    np.sqrt(mean_squared_error(r, b)),
@@ -157,7 +163,6 @@ def evaluate_all_days(
     overall_r2_s   = r2_score(r_all, s_all)
 
     # Energy totals
-    hours = 5.0 / 60.0
     total_real = results_df["Real_Wh"].sum() / 1000
     total_base = results_df["Base_Wh"].sum() / 1000
     total_shad = results_df["Shaded_Wh"].sum() / 1000

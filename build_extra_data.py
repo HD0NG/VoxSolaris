@@ -156,10 +156,163 @@ def compute_dni(ghi: pd.Series, dhi: pd.Series,
         except ImportError:
             raise ImportError("pvlib is required for solar position calculation.")
 
-        cos_z = np.cos(np.radians(zenith)).clip(min=0.087)  # ~5° min
+        cos_z = pd.Series(
+            np.cos(np.radians(zenith)),
+            index=ghi.index,
+        ).clip(lower=0.087)  # ~5 deg min
         dni = ((ghi - dhi) / cos_z).clip(lower=0).fillna(0)
 
     return dni
+
+
+def compute_dni_qc_flags(
+    ghi: pd.Series,
+    dhi: pd.Series,
+    dni: pd.Series,
+    latitude: float,
+    longitude: float,
+    min_solar_elevation_deg: float = 3.0,
+    max_dni_wm2: Optional[float] = None,
+    max_clearsky_ratio: Optional[float] = None,
+) -> pd.DataFrame:
+    """
+    Build DNI quality-control flags without changing the DNI series.
+
+    The high-latitude validation paper motivates low-solar-elevation review and
+    upper-bound screening of calculated DNI. Exact overshoot thresholds and any
+    low-elevation equation must be confirmed by the author before filtering, so
+    this helper only counts configurable flags by default.
+    """
+    try:
+        import pvlib
+    except ImportError as exc:
+        raise ImportError("pvlib is required for DNI QC diagnostics.") from exc
+
+    solpos = pvlib.solarposition.get_solarposition(ghi.index, latitude, longitude)
+    if "apparent_elevation" in solpos.columns:
+        elevation = solpos["apparent_elevation"]
+    else:
+        elevation = 90.0 - solpos["apparent_zenith"]
+
+    cos_z = pd.Series(
+        np.cos(np.radians(solpos["apparent_zenith"])),
+        index=ghi.index,
+    ).clip(lower=0)
+    reconstructed_ghi = dhi.fillna(0) + dni.fillna(0) * cos_z
+
+    flags = pd.DataFrame(index=ghi.index)
+    flags["solar_elevation_deg"] = elevation
+    flags["dni"] = dni
+    flags["ghi"] = ghi
+    flags["dhi"] = dhi
+    flags["closure_residual_wm2"] = ghi.fillna(0) - reconstructed_ghi
+    flags["low_solar_elevation"] = elevation < min_solar_elevation_deg
+    flags["negative_ghi"] = ghi < 0
+    flags["negative_dhi"] = dhi < 0
+    flags["dhi_gt_ghi"] = (dhi > ghi) & (ghi > 0)
+
+    if max_dni_wm2 is not None:
+        flags["dni_above_static_limit"] = dni > max_dni_wm2
+    else:
+        flags["dni_above_static_limit"] = False
+
+    if max_clearsky_ratio is not None:
+        # TODO[author]: Use this only after confirming the overshoot criterion
+        # and tolerance that should represent the reference-paper method.
+        times = ghi.index
+        times_for_clearsky = times.tz_localize("UTC") if times.tz is None else times
+        location = pvlib.location.Location(latitude, longitude, tz="UTC")
+        clearsky = location.get_clearsky(times_for_clearsky)
+        clearsky_dni = pd.Series(clearsky["dni"].values, index=ghi.index)
+        flags["clearsky_dni"] = clearsky_dni
+        flags["dni_above_clearsky_ratio"] = dni > (max_clearsky_ratio * clearsky_dni)
+    else:
+        flags["clearsky_dni"] = np.nan
+        flags["dni_above_clearsky_ratio"] = False
+
+    review_cols = [
+        "low_solar_elevation",
+        "negative_ghi",
+        "negative_dhi",
+        "dhi_gt_ghi",
+        "dni_above_static_limit",
+        "dni_above_clearsky_ratio",
+    ]
+    flags["requires_manual_review"] = flags[review_cols].any(axis=1)
+    return flags
+
+
+def summarize_dni_qc(flags: pd.DataFrame) -> pd.Series:
+    """Count DNI QC flags for reporting screening criteria and sample counts."""
+    flag_cols = [
+        "low_solar_elevation",
+        "negative_ghi",
+        "negative_dhi",
+        "dhi_gt_ghi",
+        "dni_above_static_limit",
+        "dni_above_clearsky_ratio",
+        "requires_manual_review",
+    ]
+    available = [c for c in flag_cols if c in flags.columns]
+    summary = flags[available].sum().astype(int)
+    summary["total_samples"] = int(len(flags))
+    return summary
+
+
+def build_dni_qc_report(
+    rad_csv: Union[str, Path],
+    temp_wind_csv: Union[str, Path],
+    latitude: float,
+    longitude: float,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    resample_min: int = 5,
+    min_solar_elevation_deg: float = 3.0,
+    max_dni_wm2: Optional[float] = None,
+    max_clearsky_ratio: Optional[float] = None,
+    output_csv: Optional[Union[str, Path]] = None,
+) -> pd.DataFrame:
+    """
+    Create a candidate DNI QC report from the FMI radiation inputs.
+
+    This does not alter existing extra_data CSVs. Pass output_csv such as
+    "output/dni_qc_report_revised.csv" to save a candidate report after the
+    author confirms the intended screening thresholds.
+    """
+    rad = load_radiation(rad_csv)
+    tw = load_temp_wind(temp_wind_csv)
+    merged = rad.join(tw, how="outer")
+
+    if start_date:
+        merged = merged[merged.index.date >= pd.to_datetime(start_date).date()]
+    if end_date:
+        merged = merged[merged.index.date <= pd.to_datetime(end_date).date()]
+
+    merged = merged.resample(f"{resample_min}min").mean()
+    ghi = merged["ghi"].fillna(0)
+    dhi = merged["dhi"].fillna(0)
+    dni = compute_dni(ghi, dhi, latitude, longitude)
+
+    report = compute_dni_qc_flags(
+        ghi=ghi,
+        dhi=dhi,
+        dni=dni,
+        latitude=latitude,
+        longitude=longitude,
+        min_solar_elevation_deg=min_solar_elevation_deg,
+        max_dni_wm2=max_dni_wm2,
+        max_clearsky_ratio=max_clearsky_ratio,
+    )
+    report.insert(0, "timestamp", report.index.strftime("%Y-%m-%d %H:%M:%S"))
+
+    if output_csv:
+        output_path = Path(output_csv)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        report.to_csv(output_path, index=False)
+        print(f"Saved DNI QC candidate report: {output_path}")
+        print(summarize_dni_qc(report).to_string())
+
+    return report
 
 
 # ═══════════════════════════════════════════════════════════════════════════
