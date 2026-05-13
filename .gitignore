@@ -2,7 +2,11 @@
 .DS_Store
 
 # data folder
-data/
+data/*
+!data/pvdata/
+!data/pvdata/**
+data/pvdata/~$*
+data/pvdata/.~lock.*#
 # output folder
 output/
 results/
