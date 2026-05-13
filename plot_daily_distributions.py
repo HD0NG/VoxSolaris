@@ -515,8 +515,8 @@ def plot_ridgeline(
     results_df: pd.DataFrame,
     metrics: Optional[list] = None,
     save_path: Optional[Union[str, Path]] = None,
-    dpi: int = 200,
-    figsize: tuple = (12, 10),
+    dpi: int = 300,
+    figsize: tuple = (13, 10.5),
 ) -> None:
     """
     Ridgeline (joy plot): stacked KDE curves, one row per metric,
@@ -635,7 +635,8 @@ def plot_ridgeline(
             ax.axvline(0, color="black", linewidth=0.8, linestyle="-", alpha=0.3)
 
         # Styling
-        ax.set_ylabel(label, fontsize=11, fontweight="bold", rotation=0, labelpad=80, va="center")
+        ax.set_ylabel(label, fontsize=12, fontweight="bold", rotation=0, labelpad=88, va="center")
+        ax.tick_params(axis="x", labelsize=10)
         ax.set_ylim(-0.1, 1.15)
         ax.set_yticks([])
         ax.spines["top"].set_visible(False)

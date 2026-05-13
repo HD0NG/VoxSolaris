@@ -5,6 +5,7 @@ import laspy
 import plotly.express as px
 import copy
 import pvlib
+from pathlib import Path
 from sklearn.metrics import r2_score
 
 # import plotly.io as pio
@@ -154,7 +155,8 @@ def _aoi_boundary(panel_tilt_deg, panel_az_deg, n=360):
 
 def plot_shadow_matrix_with_sunpaths(matrix_path, lat=62.9798, lon=27.6486,
                                      fill_missing=True,
-                                     panel_tilt_deg=12.0, panel_az_deg=170.0):
+                                     panel_tilt_deg=12.0, panel_az_deg=170.0,
+                                     save_path=None, show=True, dpi=300):
     print("Loading shadow matrix...")
     df = pd.read_csv(matrix_path, index_col=0)
 
@@ -173,15 +175,16 @@ def plot_shadow_matrix_with_sunpaths(matrix_path, lat=62.9798, lon=27.6486,
 
     yticks = range(0, 91, 10)
     ax.set_yticks(yticks)
-    ax.set_yticklabels([f"{90-y}°" for y in yticks], color='black', fontsize=9)
+    ax.set_yticklabels([f"{90-y}°" for y in yticks], color='black', fontsize=10)
+    ax.tick_params(axis='x', labelsize=10)
 
     cmap = copy.copy(plt.cm.gray_r)
     cmap.set_bad(color='#1e272e')
 
     c = ax.pcolormesh(Theta, R, df.values, cmap=cmap, vmin=0, vmax=1, shading='auto')
     cbar = fig.colorbar(c, ax=ax, shrink=0.8, pad=0.1)
-    cbar.set_label('Shadow Intensity (1 - Transmittance)', rotation=270, labelpad=20, fontsize=11)
-    cbar.ax.tick_params(labelsize=9)
+    cbar.set_label('Shadow Intensity (1 - Transmittance)', rotation=270, labelpad=20, fontsize=12)
+    cbar.ax.tick_params(labelsize=10)
 
     print("Calculating seasonal sun paths...")
     tz = 'Europe/Helsinki'
@@ -228,10 +231,17 @@ def plot_shadow_matrix_with_sunpaths(matrix_path, lat=62.9798, lon=27.6486,
             label=f'90° AOI Boundary (tilt={panel_tilt_deg:.0f}°, az={panel_az_deg:.0f}°)',
             zorder=5)
 
-    ax.set_title('Bank 1 Shadow Matrix — Polar Hemispherical View\n', fontsize=13)
+    ax.set_title('Bank 1 Shadow Matrix — Polar Hemispherical View\n', fontsize=14)
     handles, labels = ax.get_legend_handles_labels()
-    fig.legend(handles, labels, loc='upper right', fontsize=10, framealpha=0.9)
-    plt.show()
+    fig.legend(handles, labels, loc='upper right', fontsize=11, framealpha=0.9)
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=dpi, bbox_inches='tight', facecolor='white')
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+    return fig
 
 
 
@@ -243,6 +253,9 @@ def plot_shadow_polar_b2(
     fill_missing: bool = True,
     panel_tilt_deg: float = 20.0,
     panel_az_deg: float = 260.0,
+    save_path=None,
+    show: bool = True,
+    dpi: int = 300,
 ):
     """
     Side-by-side polar shadow matrix plots for Bank 2 (North and South sub-arrays).
@@ -297,9 +310,10 @@ def plot_shadow_polar_b2(
         ax.set_rlabel_position(0)
         yticks = np.arange(0, 91, 10)
         ax.set_yticks(yticks)
-        ax.set_yticklabels([f'{90-y}°' for y in yticks], fontsize=9, color='black')
+        ax.set_yticklabels([f'{90-y}°' for y in yticks], fontsize=10, color='black')
+        ax.tick_params(axis='x', labelsize=10)
         ax.grid(True, linestyle='--', alpha=0.5)
-        ax.set_title(f'{title}\n', fontsize=11, pad=10)
+        ax.set_title(f'{title}\n', fontsize=12, pad=10)
 
         if fill_missing:
             ax.fill_between(theta_fill, 0, r_fill,
@@ -321,14 +335,21 @@ def plot_shadow_polar_b2(
 
     # Shared colorbar
     cbar = fig.colorbar(pc, ax=axes.tolist(), pad=0.08, shrink=0.6, aspect=25)
-    cbar.set_label('Shadow Intensity (1 - Transmittance)', rotation=270, labelpad=18, fontsize=11)
-    cbar.ax.tick_params(labelsize=9)
+    cbar.set_label('Shadow Intensity (1 - Transmittance)', rotation=270, labelpad=18, fontsize=12)
+    cbar.ax.tick_params(labelsize=10)
 
     handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc='upper right', fontsize=10, framealpha=0.9)
+    fig.legend(handles, labels, loc='upper right', fontsize=11, framealpha=0.9)
 
-    fig.suptitle('Bank 2 Shadow Matrix — Polar Hemispherical View', fontsize=13)
-    plt.show()
+    fig.suptitle('Bank 2 Shadow Matrix — Polar Hemispherical View', fontsize=14)
+    if save_path:
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=dpi, bbox_inches='tight', facecolor='white')
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+    return fig
 
 
 def view_lidar_classes(

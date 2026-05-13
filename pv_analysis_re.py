@@ -701,21 +701,22 @@ def pv_analysis(
 def _plot_day_comparison(day_data, fb_n, fw_n, target_date_obj, full_day_index,
                         save_path=None):
     """Single-day time-series comparison plot."""
-    fig, ax = plt.subplots(figsize=(14, 6))
+    fig, ax = plt.subplots(figsize=(14, 6.5))
     ax.plot(day_data.index, day_data["Power_W"],
             label="Real Power Output", color="#2ecc71", lw=1.5)
     ax.plot(fb_n.index, fb_n["output"],
-            label="Forecast (No Shadows)", color="#3498db", linestyle="--")
+            label="Forecast (No Shadows)", color="#3498db", linestyle="--", lw=1.6)
     ax.plot(fw_n.index, fw_n["output_shaded"],
-            label="Forecast (Beam+Diffuse Shadows)", color="#e67e22")
+            label="Forecast (Beam+Diffuse Shadows)", color="#e67e22", lw=1.6)
 
     ax.xaxis.set_major_locator(mdates.HourLocator(interval=1))
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
     ax.set_xlim(full_day_index[0], full_day_index[-1])
-    ax.set_title(f"PV Comparison & Shadow Impact: {target_date_obj}")
-    ax.set_xlabel("Time (Local)")
-    ax.set_ylabel("Power (W)")
-    ax.legend(loc="upper right")
+    ax.set_title(f"PV Comparison & Shadow Impact: {target_date_obj}", fontsize=13)
+    ax.set_xlabel("Time (Local)", fontsize=12)
+    ax.set_ylabel("Power (W)", fontsize=12)
+    ax.tick_params(axis="both", labelsize=10)
+    ax.legend(loc="upper right", fontsize=10)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
 
