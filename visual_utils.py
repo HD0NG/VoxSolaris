@@ -167,8 +167,8 @@ def plot_shadow_matrix_with_sunpaths(matrix_path, lat=62.9798, lon=27.6486,
     theta_grid = np.radians(azimuths)
     Theta, R = np.meshgrid(theta_grid, r_grid)
 
-    fig, ax = plt.subplots(figsize=(10, 8), subplot_kw={'projection': 'polar'},
-                           constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(10, 8), subplot_kw={'projection': 'polar'})
+    fig.subplots_adjust(left=0.05, right=0.78, bottom=0.05, top=0.92)
     ax.set_theta_zero_location('N')
     ax.set_theta_direction(-1)
     ax.set_rlim(0, 90)
@@ -182,7 +182,7 @@ def plot_shadow_matrix_with_sunpaths(matrix_path, lat=62.9798, lon=27.6486,
     cmap.set_bad(color='#1e272e')
 
     c = ax.pcolormesh(Theta, R, df.values, cmap=cmap, vmin=0, vmax=1, shading='auto')
-    cbar = fig.colorbar(c, ax=ax, shrink=0.8, pad=0.1)
+    cbar = fig.colorbar(c, ax=ax, shrink=0.45, pad=0.06)
     cbar.set_label('Shadow Intensity (1 - Transmittance)', rotation=270, labelpad=20, fontsize=12)
     cbar.ax.tick_params(labelsize=10)
 
