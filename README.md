@@ -15,6 +15,7 @@ The model input is an `extra_data` DataFrame containing irradiance and weather v
 
 The FMI PV forecaster is referenced from:
 <https://github.com/TimoSalola/fmi_pv_forecaster.git>
+<https://github.com/fmidev/fmi-open-pv-forecast-packaged/tree/vox_solaris_shading_build>
 
 A packaged wheel for this dependency is also included under `whl/` for local installation.
 
