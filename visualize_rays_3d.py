@@ -63,6 +63,19 @@ CLASS_COLORS = {
     6: ("Building", "rgb(220,20,60)"),   # red
 }
 
+# Priority used when collapsing several classes into one voxel
+# (higher value wins — buildings dominate ground, dense veg dominates sparse).
+_CLASS_PRIORITY = {6: 5, 5: 4, 4: 3, 3: 2, 2: 1}
+
+DEFAULT_VOXEL_SIZE = 2.0
+DEFAULT_VOXEL_OPACITY = 0.08      # nearly-invisible faces (wireframe is the main signal)
+DEFAULT_VOXEL_EDGE_WIDTH = 2
+
+DEFAULT_RAY_CONE_ANGLE_DEG = 2.0  # half-angle of the visualized ray cone
+DEFAULT_RAY_CONE_SEGMENTS  = 14
+DEFAULT_RAY_COLOR          = "rgb(255,170,0)"
+DEFAULT_RAY_OPACITY        = 0.30
+
 
 # ============================================================================
 # PV ARRAY GEOMETRY (must match shadow_matrix_simulation.py)
@@ -126,6 +139,222 @@ def lookup_transmittance(shadow_matrix, altitude_deg, azimuth_deg):
 
 
 # ============================================================================
+# VOXEL REPRESENTATION
+# ============================================================================
+
+def voxelize_for_viz(points, classifications, voxel_size,
+                     scene_min=None, scene_max=None):
+    """Sparse voxelization for display.
+
+    Returns
+    -------
+    voxel_min   : (N, 3) float — lower corner of each occupied voxel (world coords)
+    voxel_class : (N,)  int   — dominant class per voxel (via _CLASS_PRIORITY)
+    voxel_count : (N,)  int   — number of LiDAR points that fell into the voxel
+    """
+    if scene_min is None:
+        scene_min = np.min(points, axis=0)
+    if scene_max is None:
+        scene_max = np.max(points, axis=0)
+    grid_dims = np.maximum(
+        np.ceil((scene_max - scene_min) / voxel_size).astype(np.int64), 1
+    )
+    nx, ny, nz = grid_dims
+
+    vi = np.clip(
+        np.floor((points - scene_min) / voxel_size).astype(np.int64),
+        0, grid_dims - 1,
+    )
+    keys = vi[:, 0] * (ny * nz) + vi[:, 1] * nz + vi[:, 2]
+
+    # Priority lookup as a dense array indexed by class id (max class id used is 6).
+    pri_lut = np.zeros(int(max(_CLASS_PRIORITY) + 1) + 1, dtype=np.int32)
+    for c, p in _CLASS_PRIORITY.items():
+        pri_lut[c] = p
+    cls_clipped = np.clip(classifications, 0, len(pri_lut) - 1).astype(np.int64)
+    pri = pri_lut[cls_clipped]
+
+    # Sort so that within each voxel, the highest-priority class comes first.
+    order = np.lexsort((-pri, keys))
+    keys_sorted = keys[order]
+    cls_sorted = classifications[order]
+
+    uniq_keys, first_idx = np.unique(keys_sorted, return_index=True)
+    dominant_cls = cls_sorted[first_idx]
+
+    counts = np.bincount(np.searchsorted(uniq_keys, keys),
+                         minlength=len(uniq_keys)).astype(np.int32)
+
+    ix = uniq_keys // (ny * nz)
+    iy = (uniq_keys // nz) % ny
+    iz = uniq_keys % nz
+    voxel_min = (np.stack([ix, iy, iz], axis=1).astype(np.float64)
+                 * voxel_size + scene_min)
+
+    return voxel_min, dominant_cls, counts
+
+
+# Cube template: 8 corner vertices, 12 triangle faces, 12 wireframe edges.
+_CUBE_VERTS = np.array([
+    [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+    [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],
+], dtype=np.float64)
+_CUBE_I = np.array([0, 0, 4, 4, 0, 0, 3, 3, 0, 0, 1, 1])
+_CUBE_J = np.array([1, 2, 5, 6, 1, 5, 2, 6, 3, 7, 2, 6])
+_CUBE_K = np.array([2, 3, 6, 7, 5, 4, 6, 7, 7, 4, 6, 5])
+
+# Cube edges: 4 bottom + 4 top + 4 verticals (12 line segments per cube).
+_CUBE_EDGES = np.array([
+    (0, 1), (1, 2), (2, 3), (3, 0),
+    (4, 5), (5, 6), (6, 7), (7, 4),
+    (0, 4), (1, 5), (2, 6), (3, 7),
+], dtype=np.int64)
+
+
+def make_voxel_mesh_traces(voxel_min, voxel_classes, voxel_size,
+                            class_colors=CLASS_COLORS,
+                            opacity=DEFAULT_VOXEL_OPACITY,
+                            visible_classes=None,
+                            showlegend=True):
+    """Build one go.Mesh3d per LiDAR class — each occupied voxel becomes a solid cube."""
+    traces = []
+    cube_v = _CUBE_VERTS * voxel_size
+    visible_classes = set(class_colors) if visible_classes is None else set(visible_classes)
+
+    for cid, (label, color) in class_colors.items():
+        if cid not in visible_classes:
+            continue
+        mask = voxel_classes == cid
+        n = int(mask.sum())
+        if n == 0:
+            continue
+
+        mins = voxel_min[mask]                            # (n, 3)
+        verts = (mins[:, None, :] + cube_v[None, :, :])   # (n, 8, 3)
+        verts = verts.reshape(-1, 3)
+
+        offsets = (np.arange(n) * 8).reshape(-1, 1)
+        i_idx = (_CUBE_I[None, :] + offsets).ravel()
+        j_idx = (_CUBE_J[None, :] + offsets).ravel()
+        k_idx = (_CUBE_K[None, :] + offsets).ravel()
+
+        traces.append(go.Mesh3d(
+            x=verts[:, 0], y=verts[:, 1], z=verts[:, 2],
+            i=i_idx, j=j_idx, k=k_idx,
+            color=color, opacity=opacity, flatshading=True,
+            name=(f"{label} voxels ({n:,})" if showlegend else None),
+            showlegend=showlegend, hoverinfo="skip",
+        ))
+    return traces
+
+
+def make_voxel_edge_traces(voxel_min, voxel_classes, voxel_size,
+                           class_colors=CLASS_COLORS,
+                           line_width=DEFAULT_VOXEL_EDGE_WIDTH,
+                           visible_classes=None,
+                           opacity=1.0):
+    """Build one go.Scatter3d (line mode) per class — wireframe-only voxels.
+
+    Disconnected edges are encoded with NaN separators, which Plotly treats
+    as line breaks within a single Scatter3d trace.
+    """
+    traces = []
+    cube_v = _CUBE_VERTS * voxel_size
+    visible_classes = set(class_colors) if visible_classes is None else set(visible_classes)
+
+    for cid, (label, color) in class_colors.items():
+        if cid not in visible_classes:
+            continue
+        mask = voxel_classes == cid
+        n = int(mask.sum())
+        if n == 0:
+            continue
+
+        # (n, 8, 3) all 8 cube vertices for every selected voxel
+        all_v = voxel_min[mask][:, None, :] + cube_v[None, :, :]
+
+        # (n, 12, 2, 3): two endpoints per edge × 12 edges × n voxels
+        seg = all_v[:, _CUBE_EDGES, :]
+
+        # Pad to 3 entries per segment (start, end, NaN-break) so Plotly
+        # breaks the polyline between edges.
+        padded = np.full((n, 12, 3, 3), np.nan, dtype=np.float64)
+        padded[:, :, :2, :] = seg
+        flat = padded.reshape(-1, 3)
+
+        traces.append(go.Scatter3d(
+            x=flat[:, 0], y=flat[:, 1], z=flat[:, 2],
+            mode="lines",
+            line=dict(width=line_width, color=color),
+            opacity=opacity,
+            name=f"{label} voxels ({n:,})",
+            hoverinfo="skip",
+        ))
+    return traces
+
+
+# ============================================================================
+# SOLAR RAY CONES
+# ============================================================================
+
+def _cone_geometry(apex, direction, length, half_angle_rad, n_segments):
+    """Vertices + triangle indices for one cone (apex → circular base)."""
+    direction = direction / np.linalg.norm(direction)
+
+    # Pick any vector not parallel to direction, then Gram–Schmidt for two
+    # orthonormal vectors spanning the base plane.
+    helper = np.array([0.0, 0.0, 1.0]) if abs(direction[2]) < 0.95 \
+             else np.array([1.0, 0.0, 0.0])
+    u = np.cross(direction, helper); u /= np.linalg.norm(u)
+    v = np.cross(direction, u)
+
+    base_center = apex + direction * length
+    base_radius = length * np.tan(half_angle_rad)
+
+    thetas = np.linspace(0.0, 2 * np.pi, n_segments, endpoint=False)
+    base = (base_center[None, :]
+            + base_radius * (np.cos(thetas)[:, None] * u[None, :]
+                             + np.sin(thetas)[:, None] * v[None, :]))
+
+    verts = np.vstack([apex[None, :], base])                  # (n_segments + 1, 3)
+    # Lateral surface: apex(0) — base_i — base_{i+1 mod n}
+    i_idx = np.zeros(n_segments, dtype=np.int64)
+    j_idx = 1 + np.arange(n_segments, dtype=np.int64)
+    k_idx = 1 + (np.arange(n_segments, dtype=np.int64) + 1) % n_segments
+    return verts, i_idx, j_idx, k_idx
+
+
+def make_solar_cone_trace(apexes, direction, length,
+                          half_angle_deg=DEFAULT_RAY_CONE_ANGLE_DEG,
+                          n_segments=DEFAULT_RAY_CONE_SEGMENTS,
+                          color=DEFAULT_RAY_COLOR,
+                          opacity=DEFAULT_RAY_OPACITY,
+                          name="Solar rays"):
+    """One go.Mesh3d holding a cone per apex (e.g. one cone per PV panel)."""
+    half_angle_rad = np.radians(half_angle_deg)
+    all_v, all_i, all_j, all_k = [], [], [], []
+    base = 0
+    for apex in apexes:
+        v, i, j, k = _cone_geometry(np.asarray(apex, dtype=np.float64),
+                                    direction, length, half_angle_rad, n_segments)
+        all_v.append(v)
+        all_i.append(i + base)
+        all_j.append(j + base)
+        all_k.append(k + base)
+        base += len(v)
+
+    V = np.vstack(all_v)
+    return go.Mesh3d(
+        x=V[:, 0], y=V[:, 1], z=V[:, 2],
+        i=np.concatenate(all_i),
+        j=np.concatenate(all_j),
+        k=np.concatenate(all_k),
+        color=color, opacity=opacity, flatshading=True,
+        name=name, showlegend=True, hoverinfo="skip",
+    )
+
+
+# ============================================================================
 # MAIN VISUALIZATION
 # ============================================================================
 
@@ -136,6 +365,19 @@ def visualize_scene(
     radius=DEFAULT_RADIUS,
     ray_length=RAY_LENGTH,
     subsample=POINT_SUBSAMPLE,
+    show_points=True,
+    show_voxels=False,
+    voxel_size=DEFAULT_VOXEL_SIZE,
+    voxel_opacity=DEFAULT_VOXEL_OPACITY,
+    voxel_edges=True,
+    voxel_edge_width=DEFAULT_VOXEL_EDGE_WIDTH,
+    voxel_classes=None,
+    show_sun=True,
+    show_rays=True,
+    ray_cone_angle_deg=DEFAULT_RAY_CONE_ANGLE_DEG,
+    ray_cone_segments=DEFAULT_RAY_CONE_SEGMENTS,
+    ray_color=DEFAULT_RAY_COLOR,
+    ray_opacity=DEFAULT_RAY_OPACITY,
 ):
     """
     Create an interactive 3D visualization of the LiDAR scene with
@@ -154,7 +396,26 @@ def visualize_scene(
     ray_length : float
         Length of ray visualization in meters
     subsample : int
-        Show every Nth point (performance)
+        Show every Nth point (performance, point cloud only)
+    show_points, show_voxels, show_sun, show_rays : bool
+        Per-element visibility toggles.
+    voxel_size : float
+        Edge length of each voxel in metres (matches shadow-matrix grid).
+    voxel_opacity : float
+        Face opacity (0–1) of the cube meshes. Set 0 to render edges only.
+    voxel_edges : bool
+        Overlay colored cube edges on top of the (semi-transparent) faces.
+    voxel_edge_width : float
+        Line width of wireframe edges.
+    voxel_classes : iterable of int or None
+        Restrict which class IDs become voxel cubes. ``None`` = all classes.
+    ray_cone_angle_deg : float
+        Half-angle of the visualised solar-ray cone (deg). ``0`` falls back
+        to single-line rays.
+    ray_cone_segments : int
+        Circular resolution of each cone (more = smoother, heavier).
+    ray_color, ray_opacity : str, float
+        Cone color and opacity.
     """
     local_time = pd.Timestamp(local_time_str)
     print(f"Visualizing scene at {local_time} (local)")
@@ -235,19 +496,47 @@ def visualize_scene(
     # --- Build Plotly traces ---
     traces = []
 
-    # LiDAR points by class
-    for class_id, (label, color) in CLASS_COLORS.items():
-        mask = cls_show == class_id
-        if mask.sum() == 0:
-            continue
-        p = pts_show[mask]
-        traces.append(go.Scatter3d(
-            x=p[:, 0], y=p[:, 1], z=p[:, 2],
-            mode="markers",
-            marker=dict(size=1.5, color=color, opacity=0.6),
-            name=f"{label} ({mask.sum():,})",
-            hovertemplate=f"{label}<br>x=%{{x:.1f}}<br>y=%{{y:.1f}}<br>z=%{{z:.1f}}",
-        ))
+    if show_points:
+        # LiDAR points by class
+        for class_id, (label, color) in CLASS_COLORS.items():
+            mask = cls_show == class_id
+            if mask.sum() == 0:
+                continue
+            p = pts_show[mask]
+            traces.append(go.Scatter3d(
+                x=p[:, 0], y=p[:, 1], z=p[:, 2],
+                mode="markers",
+                marker=dict(size=1.5, color=color, opacity=0.6),
+                name=f"{label} ({mask.sum():,})",
+                hovertemplate=f"{label}<br>x=%{{x:.1f}}<br>y=%{{y:.1f}}<br>z=%{{z:.1f}}",
+            ))
+
+    if show_voxels:
+        # Voxelise the full cropped cloud (not the subsampled view) so the
+        # voxel grid matches what the shadow-matrix simulation would see.
+        v_min, v_cls, v_cnt = voxelize_for_viz(pts_crop, cls_crop, voxel_size)
+        n_total = len(v_min)
+        if voxel_classes is not None:
+            keep = np.isin(v_cls, list(voxel_classes))
+            v_min, v_cls, v_cnt = v_min[keep], v_cls[keep], v_cnt[keep]
+        print(f"  Voxelisation: {n_total:,} occupied voxels "
+              f"@ {voxel_size}m (showing {len(v_min):,})")
+
+        # Faces: optional, semi-transparent. Edges (when shown) own the
+        # legend entry so we don't get two rows per class.
+        if voxel_opacity > 0:
+            traces.extend(make_voxel_mesh_traces(
+                v_min, v_cls, voxel_size,
+                class_colors=CLASS_COLORS, opacity=voxel_opacity,
+                visible_classes=voxel_classes,
+                showlegend=not voxel_edges,
+            ))
+        if voxel_edges:
+            traces.extend(make_voxel_edge_traces(
+                v_min, v_cls, voxel_size,
+                class_colors=CLASS_COLORS, line_width=voxel_edge_width,
+                visible_classes=voxel_classes,
+            ))
 
     # Panel points
     traces.append(go.Scatter3d(
@@ -259,33 +548,40 @@ def visualize_scene(
         hovertemplate="Panel<br>x=%{x:.2f}<br>y=%{y:.2f}<br>z=%{z:.2f}",
     ))
 
-    # Ray lines from each panel toward the sun
-    for i, pt in enumerate(panel_points):
-        end = pt + sun_dir * ray_length
-        # Color by transmittance: green=clear, red=blocked
-        ray_color = f"rgb({int(255*(1-transmittance))},{int(255*transmittance)},0)"
+    if show_rays:
+        if ray_cone_angle_deg > 0:
+            traces.append(make_solar_cone_trace(
+                panel_points, sun_dir, ray_length,
+                half_angle_deg=ray_cone_angle_deg,
+                n_segments=ray_cone_segments,
+                color=ray_color, opacity=ray_opacity,
+                name="Solar ray cones",
+            ))
+        else:
+            for i, pt in enumerate(panel_points):
+                end = pt + sun_dir * ray_length
+                traces.append(go.Scatter3d(
+                    x=[pt[0], end[0]], y=[pt[1], end[1]], z=[pt[2], end[2]],
+                    mode="lines",
+                    line=dict(width=4, color=ray_color),
+                    opacity=ray_opacity,
+                    name="Solar rays" if i == 0 else None,
+                    showlegend=(i == 0),
+                    hoverinfo="skip",
+                ))
 
+    if show_sun:
+        sun_marker = array_center + sun_dir * ray_length * 1.2
         traces.append(go.Scatter3d(
-            x=[pt[0], end[0]], y=[pt[1], end[1]], z=[pt[2], end[2]],
-            mode="lines",
-            line=dict(width=4, color=ray_color),
-            name=f"Ray {i+1}" if i == 0 else None,
-            showlegend=(i == 0),
-            hovertemplate=f"Ray {i+1}<br>T={transmittance:.3f}",
+            x=[sun_marker[0]], y=[sun_marker[1]], z=[sun_marker[2]],
+            mode="markers+text",
+            marker=dict(size=15, color="yellow", symbol="diamond",
+                        line=dict(width=2, color="orange")),
+            text=[f"☀ Alt={altitude_deg:.1f}° Az={azimuth_deg:.1f}°"],
+            textposition="top center",
+            textfont=dict(size=12, color="orange"),
+            name="Sun direction",
         ))
-
-    # Sun direction indicator (large arrow endpoint)
-    sun_marker = array_center + sun_dir * ray_length * 1.2
-    traces.append(go.Scatter3d(
-        x=[sun_marker[0]], y=[sun_marker[1]], z=[sun_marker[2]],
-        mode="markers+text",
-        marker=dict(size=15, color="yellow", symbol="diamond",
-                    line=dict(width=2, color="orange")),
-        text=[f"☀ Alt={altitude_deg:.1f}° Az={azimuth_deg:.1f}°"],
-        textposition="top center",
-        textfont=dict(size=12, color="orange"),
-        name="Sun direction",
-    ))
 
     # --- Layout ---
     fig = go.Figure(data=traces)
@@ -343,6 +639,33 @@ if __name__ == "__main__":
                         help="Ray visualization length in meters (default 60)")
     parser.add_argument("--subsample", type=int, default=POINT_SUBSAMPLE,
                         help="Point subsampling factor (default 3)")
+    parser.add_argument("--voxels", action="store_true",
+                        help="Render the cropped scene as voxel cubes")
+    parser.add_argument("--no-points", action="store_true",
+                        help="Hide the raw LiDAR point cloud (useful with --voxels)")
+    parser.add_argument("--voxel-size", type=float, default=DEFAULT_VOXEL_SIZE,
+                        help=f"Voxel edge length in metres (default {DEFAULT_VOXEL_SIZE})")
+    parser.add_argument("--voxel-opacity", type=float, default=DEFAULT_VOXEL_OPACITY,
+                        help=f"Voxel cube opacity 0–1 (default {DEFAULT_VOXEL_OPACITY})")
+    parser.add_argument("--voxel-classes", type=int, nargs="+", default=None,
+                        help="Restrict voxel rendering to these class IDs "
+                             "(e.g. 5 6 for high-veg + buildings only)")
+    parser.add_argument("--no-voxel-edges", action="store_true",
+                        help="Disable wireframe edge overlay on voxels")
+    parser.add_argument("--voxel-edge-width", type=float,
+                        default=DEFAULT_VOXEL_EDGE_WIDTH,
+                        help=f"Voxel edge line width (default {DEFAULT_VOXEL_EDGE_WIDTH})")
+    parser.add_argument("--no-sun", action="store_true",
+                        help="Hide the sun marker")
+    parser.add_argument("--no-rays", action="store_true",
+                        help="Hide the solar ray cones / lines")
+    parser.add_argument("--ray-cone-angle", type=float,
+                        default=DEFAULT_RAY_CONE_ANGLE_DEG,
+                        help="Half-angle (deg) of the ray cone, 0 = single line "
+                             f"(default {DEFAULT_RAY_CONE_ANGLE_DEG})")
+    parser.add_argument("--ray-cone-segments", type=int,
+                        default=DEFAULT_RAY_CONE_SEGMENTS,
+                        help=f"Cone circular resolution (default {DEFAULT_RAY_CONE_SEGMENTS})")
 
     args = parser.parse_args()
 
@@ -353,4 +676,15 @@ if __name__ == "__main__":
         radius=args.radius,
         ray_length=args.ray_length,
         subsample=args.subsample,
+        show_points=not args.no_points,
+        show_voxels=args.voxels,
+        voxel_size=args.voxel_size,
+        voxel_opacity=args.voxel_opacity,
+        voxel_edges=not args.no_voxel_edges,
+        voxel_edge_width=args.voxel_edge_width,
+        voxel_classes=args.voxel_classes,
+        show_sun=not args.no_sun,
+        show_rays=not args.no_rays,
+        ray_cone_angle_deg=args.ray_cone_angle,
+        ray_cone_segments=args.ray_cone_segments,
     )
