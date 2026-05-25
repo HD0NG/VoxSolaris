@@ -77,6 +77,9 @@ DEFAULT_RAY_CONE_SEGMENTS  = 14
 DEFAULT_RAY_COLOR          = "rgb(255,170,0)"
 DEFAULT_RAY_OPACITY        = 0.30
 
+DEFAULT_POINT_SIZE    = 1.5
+DEFAULT_PANEL_SIZE    = 8
+
 
 # ============================================================================
 # PV ARRAY GEOMETRY (must match shadow_matrix_simulation.py)
@@ -376,6 +379,10 @@ def visualize_scene(
     voxel_classes=None,
     show_sun=True,
     show_rays=True,
+    show_axes=True,
+    show_panels=True,
+    point_size=DEFAULT_POINT_SIZE,
+    panel_size=DEFAULT_PANEL_SIZE,
     ray_cone_angle_deg=DEFAULT_RAY_CONE_ANGLE_DEG,
     ray_cone_segments=DEFAULT_RAY_CONE_SEGMENTS,
     ray_color=DEFAULT_RAY_COLOR,
@@ -399,8 +406,15 @@ def visualize_scene(
         Length of ray visualization in meters
     subsample : int
         Show every Nth point (performance, point cloud only)
-    show_points, show_voxels, show_sun, show_rays : bool
+    show_points, show_voxels, show_sun, show_rays, show_panels : bool
         Per-element visibility toggles.
+    point_size : float
+        Marker size of the LiDAR point cloud (Plotly Scatter3d units).
+    panel_size : float
+        Marker size of the PV-panel diamond glyphs.
+    show_axes : bool
+        Show the X/Y/Z axis lines, ticks, and titles. Set ``False`` for a
+        chrome-free render (useful for screenshots / publication figures).
     voxel_size : float
         Edge length of each voxel in metres (matches shadow-matrix grid).
     voxel_opacity : float
@@ -511,7 +525,7 @@ def visualize_scene(
             traces.append(go.Scatter3d(
                 x=p[:, 0], y=p[:, 1], z=p[:, 2],
                 mode="markers",
-                marker=dict(size=1.5, color=color, opacity=0.6),
+                marker=dict(size=point_size, color=color, opacity=0.6),
                 name=f"{label} ({mask.sum():,})",
                 hovertemplate=f"{label}<br>x=%{{x:.1f}}<br>y=%{{y:.1f}}<br>z=%{{z:.1f}}",
             ))
@@ -544,15 +558,15 @@ def visualize_scene(
                 opacity=voxel_edge_opacity,
             ))
 
-    # Panel points
-    traces.append(go.Scatter3d(
-        x=panel_points[:, 0], y=panel_points[:, 1], z=panel_points[:, 2],
-        mode="markers",
-        marker=dict(size=8, color="rgb(255,215,0)", symbol="diamond",
-                    line=dict(width=1, color="black")),
-        name=f"PV Panels ({len(panel_points)})",
-        hovertemplate="Panel<br>x=%{x:.2f}<br>y=%{y:.2f}<br>z=%{z:.2f}",
-    ))
+    if show_panels:
+        traces.append(go.Scatter3d(
+            x=panel_points[:, 0], y=panel_points[:, 1], z=panel_points[:, 2],
+            mode="markers",
+            marker=dict(size=panel_size, color="rgb(255,215,0)", symbol="diamond",
+                        line=dict(width=1, color="black")),
+            name=f"PV Panels ({len(panel_points)})",
+            hovertemplate="Panel<br>x=%{x:.2f}<br>y=%{y:.2f}<br>z=%{z:.2f}",
+        ))
 
     if show_rays:
         if ray_cone_angle_deg > 0:
@@ -600,9 +614,12 @@ def visualize_scene(
             font=dict(size=16),
         ),
         scene=dict(
-            xaxis=dict(title="Easting (m)",   showbackground=False, showgrid=False, zeroline=False),
-            yaxis=dict(title="Northing (m)",  showbackground=False, showgrid=False, zeroline=False),
-            zaxis=dict(title="Elevation (m)", showbackground=False, showgrid=False, zeroline=False),
+            xaxis=dict(title="Easting (m)",   showbackground=False, showgrid=False,
+                       zeroline=False, visible=show_axes),
+            yaxis=dict(title="Northing (m)",  showbackground=False, showgrid=False,
+                       zeroline=False, visible=show_axes),
+            zaxis=dict(title="Elevation (m)", showbackground=False, showgrid=False,
+                       zeroline=False, visible=show_axes),
             aspectmode="data",
             bgcolor="white",
             camera=dict(
@@ -669,6 +686,14 @@ if __name__ == "__main__":
                         help="Hide the sun marker")
     parser.add_argument("--no-rays", action="store_true",
                         help="Hide the solar ray cones / lines")
+    parser.add_argument("--no-axes", action="store_true",
+                        help="Hide the X/Y/Z axis lines, ticks and titles")
+    parser.add_argument("--no-panels", action="store_true",
+                        help="Hide the PV panel markers")
+    parser.add_argument("--point-size", type=float, default=DEFAULT_POINT_SIZE,
+                        help=f"LiDAR point marker size (default {DEFAULT_POINT_SIZE})")
+    parser.add_argument("--panel-size", type=float, default=DEFAULT_PANEL_SIZE,
+                        help=f"PV panel marker size (default {DEFAULT_PANEL_SIZE})")
     parser.add_argument("--ray-cone-angle", type=float,
                         default=DEFAULT_RAY_CONE_ANGLE_DEG,
                         help="Half-angle (deg) of the ray cone, 0 = single line "
@@ -696,6 +721,10 @@ if __name__ == "__main__":
         voxel_classes=args.voxel_classes,
         show_sun=not args.no_sun,
         show_rays=not args.no_rays,
+        show_axes=not args.no_axes,
+        show_panels=not args.no_panels,
+        point_size=args.point_size,
+        panel_size=args.panel_size,
         ray_cone_angle_deg=args.ray_cone_angle,
         ray_cone_segments=args.ray_cone_segments,
     )
