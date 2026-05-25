@@ -67,9 +67,10 @@ CLASS_COLORS = {
 # (higher value wins — buildings dominate ground, dense veg dominates sparse).
 _CLASS_PRIORITY = {6: 5, 5: 4, 4: 3, 3: 2, 2: 1}
 
-DEFAULT_VOXEL_SIZE = 2.0
-DEFAULT_VOXEL_OPACITY = 0.08      # nearly-invisible faces (wireframe is the main signal)
-DEFAULT_VOXEL_EDGE_WIDTH = 2
+DEFAULT_VOXEL_SIZE         = 2.0
+DEFAULT_VOXEL_OPACITY      = 0.0   # 0 = no face mesh (pure wireframe). Bump to add faint faces.
+DEFAULT_VOXEL_EDGE_WIDTH   = 2
+DEFAULT_VOXEL_EDGE_OPACITY = 0.6
 
 DEFAULT_RAY_CONE_ANGLE_DEG = 2.0  # half-angle of the visualized ray cone
 DEFAULT_RAY_CONE_SEGMENTS  = 14
@@ -252,7 +253,7 @@ def make_voxel_edge_traces(voxel_min, voxel_classes, voxel_size,
                            class_colors=CLASS_COLORS,
                            line_width=DEFAULT_VOXEL_EDGE_WIDTH,
                            visible_classes=None,
-                           opacity=1.0):
+                           opacity=DEFAULT_VOXEL_EDGE_OPACITY):
     """Build one go.Scatter3d (line mode) per class — wireframe-only voxels.
 
     Disconnected edges are encoded with NaN separators, which Plotly treats
@@ -371,6 +372,7 @@ def visualize_scene(
     voxel_opacity=DEFAULT_VOXEL_OPACITY,
     voxel_edges=True,
     voxel_edge_width=DEFAULT_VOXEL_EDGE_WIDTH,
+    voxel_edge_opacity=DEFAULT_VOXEL_EDGE_OPACITY,
     voxel_classes=None,
     show_sun=True,
     show_rays=True,
@@ -402,11 +404,14 @@ def visualize_scene(
     voxel_size : float
         Edge length of each voxel in metres (matches shadow-matrix grid).
     voxel_opacity : float
-        Face opacity (0–1) of the cube meshes. Set 0 to render edges only.
+        Face opacity (0–1) of the cube meshes. ``0`` (default) skips the
+        face mesh entirely — pure wireframe.
     voxel_edges : bool
-        Overlay colored cube edges on top of the (semi-transparent) faces.
+        Render the colored cube edges (wireframe).
     voxel_edge_width : float
         Line width of wireframe edges.
+    voxel_edge_opacity : float
+        Opacity (0–1) of the wireframe edges.
     voxel_classes : iterable of int or None
         Restrict which class IDs become voxel cubes. ``None`` = all classes.
     ray_cone_angle_deg : float
@@ -536,6 +541,7 @@ def visualize_scene(
                 v_min, v_cls, voxel_size,
                 class_colors=CLASS_COLORS, line_width=voxel_edge_width,
                 visible_classes=voxel_classes,
+                opacity=voxel_edge_opacity,
             ))
 
     # Panel points
@@ -594,10 +600,11 @@ def visualize_scene(
             font=dict(size=16),
         ),
         scene=dict(
-            xaxis_title="Easting (m)",
-            yaxis_title="Northing (m)",
-            zaxis_title="Elevation (m)",
+            xaxis=dict(title="Easting (m)",   showbackground=False, showgrid=False, zeroline=False),
+            yaxis=dict(title="Northing (m)",  showbackground=False, showgrid=False, zeroline=False),
+            zaxis=dict(title="Elevation (m)", showbackground=False, showgrid=False, zeroline=False),
             aspectmode="data",
+            bgcolor="white",
             camera=dict(
                 eye=dict(x=1.5, y=-1.5, z=1.0),
                 up=dict(x=0, y=0, z=1),
@@ -655,6 +662,9 @@ if __name__ == "__main__":
     parser.add_argument("--voxel-edge-width", type=float,
                         default=DEFAULT_VOXEL_EDGE_WIDTH,
                         help=f"Voxel edge line width (default {DEFAULT_VOXEL_EDGE_WIDTH})")
+    parser.add_argument("--voxel-edge-opacity", type=float,
+                        default=DEFAULT_VOXEL_EDGE_OPACITY,
+                        help=f"Voxel edge opacity 0–1 (default {DEFAULT_VOXEL_EDGE_OPACITY})")
     parser.add_argument("--no-sun", action="store_true",
                         help="Hide the sun marker")
     parser.add_argument("--no-rays", action="store_true",
@@ -682,6 +692,7 @@ if __name__ == "__main__":
         voxel_opacity=args.voxel_opacity,
         voxel_edges=not args.no_voxel_edges,
         voxel_edge_width=args.voxel_edge_width,
+        voxel_edge_opacity=args.voxel_edge_opacity,
         voxel_classes=args.voxel_classes,
         show_sun=not args.no_sun,
         show_rays=not args.no_rays,
