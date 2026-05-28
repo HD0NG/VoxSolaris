@@ -647,7 +647,7 @@ def plot_ridgeline(
             ax.set_xticklabels([])
             ax.spines["bottom"].set_alpha(0.2)
         else:
-            ax.set_xlabel("Value", fontsize=12)
+            ax.set_xlabel(" ", fontsize=12)
 
         ax.grid(axis="x", color=C_GRID, linewidth=0.6, alpha=0.5)
 
