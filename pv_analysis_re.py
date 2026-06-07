@@ -7,7 +7,7 @@ Key features:
   3. Robust timezone handling: inverter confirmed as fixed UTC+3.
   4. Shadow matrix smoothed once at load time.
   5. Proper nighttime handling — no shadow lookup when sun is below horizon.
-  6. Sigmoid-based albedo estimation (not binary).
+  6. Fixed surface albedo (0.12; no on-site reflected-radiation data).
   7. R² included in compute_metrics (daytime-filtered).
   8. Missing-record-aware inverter loading with gap reporting.
   9. Guarded beam fraction (no negative cos(zenith)).
@@ -68,11 +68,11 @@ class SiteConfig:
     interval: str = "5min"
     interval_minutes: float = 5.0
 
-    # Albedo: sigmoid transition parameters
-    albedo_snow: float = 0.65
-    albedo_bare: float = 0.20
-    albedo_transition_center_c: float = 1.0
-    albedo_transition_width_c: float = 3.0
+    # Albedo: fixed value applied to all records.
+    # On-site reflected radiation was not recorded (the FMI "Reflected
+    # radiation" column is empty for the whole period), so albedo cannot be
+    # measured or reliably inferred. A flat bare-ground value is used.
+    albedo_fixed: float = 0.12
 
     # Empirical forecast time shift (minutes, positive = shift forecast later).
     # Compensates for the spatial offset between the FMI weather station
@@ -262,19 +262,13 @@ def find_clear_days(
 
 def estimate_albedo(temperature_series: pd.Series, cfg: SiteConfig = DEFAULT_CFG) -> float:
     """
-    Sigmoid-based albedo from daily mean temperature.
+    Fixed surface albedo applied to all records.
 
-    Smoothly transitions between snow albedo and bare-ground albedo,
-    more realistic than a binary switch for boreal spring/autumn.
+    On-site reflected radiation was unavailable, so albedo is set to a flat
+    bare-ground value (cfg.albedo_fixed) rather than estimated from temperature.
+    The temperature argument is retained for call-site compatibility.
     """
-    t_mean = temperature_series.mean()
-    if np.isnan(t_mean):
-        return cfg.albedo_bare
-
-    tc = cfg.albedo_transition_center_c
-    tw = cfg.albedo_transition_width_c
-    snow_frac = 1.0 / (1.0 + np.exp((t_mean - tc) / (tw / 4.0)))
-    return round(float(snow_frac * cfg.albedo_snow + (1 - snow_frac) * cfg.albedo_bare), 3)
+    return cfg.albedo_fixed
 
 
 def _load_fmi_csv(path: Union[str, Path]) -> pd.DataFrame:
@@ -353,10 +347,10 @@ def load_extra_data_csv(
     Parameters
     ----------
     recompute_albedo : bool
-        If True (default), overwrite the cached albedo column with a fresh
-        estimate from the sigmoid model using the temperature data in the file.
-        The cached CSVs were generated with the old binary albedo (0.7 / 0.2),
-        so recomputing gives the improved sigmoid-based values.
+        If True (default), overwrite the cached albedo column with the fixed
+        albedo value (cfg.albedo_fixed = 0.12). On-site reflected radiation was
+        not recorded, so albedo is a flat bare-ground assumption rather than a
+        measured or temperature-derived value.
     """
     df = pd.read_csv(path)
     df["timestamp"] = pd.to_datetime(df["timestamp"])
